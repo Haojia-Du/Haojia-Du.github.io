@@ -1,2 +1,3 @@
 # Haojia-Du.github.io
-Haojia-Du's blog
+
+Personal homepage inspired by arthals.ink. Built with plain HTML, CSS, and JavaScript.
