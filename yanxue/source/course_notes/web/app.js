@@ -79,6 +79,7 @@ function fillRecordings() {
   if (!course) {
     select.innerHTML = `<option value="">先选择课程</option>`;
     select.disabled = true;
+    if (typeof renderBatchSelection === "function") renderBatchSelection();
     return;
   }
   select.disabled = false;
@@ -86,6 +87,7 @@ function fillRecordings() {
     const detail = [item.time, item.teacher].filter(Boolean).join(" · ");
     return `<option value="${index}">${escapeHtml(item.name || `第 ${index + 1} 节`)}${detail ? `｜${escapeHtml(detail)}` : ""}</option>`;
   }).join("");
+  if (typeof renderBatchSelection === "function") renderBatchSelection();
 }
 
 function renderRecorder(recorder, job) {
@@ -147,6 +149,7 @@ function render(data) {
   $("#task-error-message").textContent = job.error || "";
   $("#retry-task").classList.toggle("hidden", !job.can_retry);
   if (typeof updateStudyStatus === "function") updateStudyStatus(job);
+  if (typeof updateOptionalFeatures === "function") updateOptionalFeatures(data);
 }
 
 async function refresh() {

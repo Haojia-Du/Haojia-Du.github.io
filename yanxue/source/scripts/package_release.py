@@ -14,8 +14,8 @@ def main() -> None:
     files += sorted((root / "course_notes").glob("*.py"))
     files += sorted(path for path in (root / "course_notes" / "web").rglob("*") if path.is_file() and path.suffix in {".html", ".css", ".js", ".txt", ".woff2"})
     files += sorted((root / "tests").glob("test_*.py"))
-    files += [root / "scripts" / "package_release.py"]
-    files += [root / "publish" / "README.md", root / "publish" / "index.html"]
+    files += sorted((root / "scripts").glob("*.py"))
+    files += [root / "publish" / "README.md", root / "publish" / "index.html", root / "publish" / "yanxue-windows.yml"]
     entries = [{"path": str(path.relative_to(root)).replace("\\", "/"),
                 "content": base64.b64encode(path.read_bytes()).decode("ascii") if path.suffix == ".woff2" else path.read_text(encoding="utf-8"),
                 "encoding": "base64" if path.suffix == ".woff2" else "utf-8"} for path in files]
@@ -29,7 +29,8 @@ def main() -> None:
             if entry["path"].endswith(".cmd"):
                 content = content.replace("\r\n", "\n").replace("\n", "\r\n")
             bundle.writestr("yanxue/" + entry["path"], base64.b64decode(content) if entry.get("encoding") == "base64" else content.encode("utf-8"))
-    manifest = {"version": "0.2.0", "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(), "files": len(entries)}
+    manifest = {"version": "0.3.0", "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(), "files": len(entries),
+                "optional_windows_release": "https://github.com/Haojia-Du/Haojia-Du.github.io/releases/tag/yanxue-v0.3.0"}
     (output / "release-manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     (output / "source-files.json").write_text(json.dumps(entries, ensure_ascii=False), encoding="utf-8")
     print(json.dumps({"archive": str(archive), "bytes": archive.stat().st_size, **manifest}, ensure_ascii=False))

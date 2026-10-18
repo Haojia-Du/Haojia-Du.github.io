@@ -64,7 +64,30 @@ def effective_config(course: Path, config: dict) -> dict:
         result["automation"]["downloader_root"] = settings["downloader_root"]
     result["models"]["base_url"] = result["models"].get("base_url") or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
     result["_api_key"] = api_key(course, settings)
+    options_path = course / "course-options.json"
+    options = json.loads(options_path.read_text(encoding="utf-8")) if options_path.exists() else {}
+    result["course"] = {**config.get("course", {}), **{k: options[k] for k in ("profile", "terms") if k in options}}
     return result
+
+
+def save_course_options(course: Path, values: dict) -> None:
+    profile = str(values.get("profile", "general"))
+    if profile not in {"general", "stem", "economics", "humanities", "law", "language"}:
+        raise SettingsError("请选择有效课程模板。")
+    terms = values.get("terms", [])
+    if not isinstance(terms, list) or len(terms) > 500 or any(not isinstance(v, str) or len(v) > 200 for v in terms):
+        raise SettingsError("术语应为字符串列表，最多500项，每项不超过200字。")
+    from .core import atomic_write, write_json
+    write_json(course / "course-options.json", {"profile": profile, "terms": list(dict.fromkeys(v.strip() for v in terms if v.strip()))})
+    if "prompt" in values:
+        atomic_write(course / "prompt.md", str(values["prompt"]))
+
+
+def remember_course(course: Path) -> None:
+    settings = load_settings(course)
+    settings["current_course"] = course.name
+    from .core import write_json
+    write_json(settings_path(course), settings)
 
 
 def save_settings(course: Path, values: dict) -> None:

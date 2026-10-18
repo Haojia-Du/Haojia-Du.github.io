@@ -34,10 +34,13 @@ from .core import (
     write_json,
 )
 from .cli import sync_once
-from .settings import effective_config, load_settings, save_settings, settings_path
+from .settings import effective_config, load_settings, save_settings, settings_path, save_course_options, remember_course
 from .materials import material_data, file_at
 from .study import generate_review
 from .workflow import run_recording
+from .batch import batch_status, prepare_batch, run_batch
+from .desktop import diagnostics, install_browser, install_ffmpeg, check_update
+from .version import VERSION
 
 
 WEB_ROOT = Path(__file__).with_name("web")
@@ -186,6 +189,7 @@ class WebApp:
         self.recorder_process: subprocess.Popen[Any] | None = None
         self.one_click_stage = "idle"
         self.workspace_root = self.course_dir.parent
+        self.batch_pause = threading.Event()
         self._recorder_cache: tuple[float, dict[str, Any]] = (0.0, {"running": False})
         self.events.add("可视化工作台已启动。", "success")
 
@@ -265,6 +269,8 @@ class WebApp:
                 pass
         recorder = self.recorder_status()
         return {
+            "version": VERSION,
+            "batch": batch_status(self),
             "course": {
                 "title": self.course_title,
                 "profile": self.config.get("course", {}).get("profile", "general"),
@@ -338,7 +344,16 @@ class WebApp:
             if course.parent != self.workspace_root:
                 raise PipelineError("重试任务的课程目录无效。")
             self.course_dir, self.config_path = course, course / "course.toml"
-        if kind == "one-click":
+        if kind == "batch":
+            if not retry and "batch_id" not in args:
+                selected = next((c for c in self.recorder_courses if str(c.get("course_id")) == str(args.get("course_id"))), None)
+                if selected is None:
+                    raise PipelineError("请先读取教学网课程。")
+                args = prepare_batch(self, selected, [int(i) for i in args.get("indices", [])], str(args.get("profile", "general")),
+                                     bool(args.get("include_files", True)), bool(args.get("generate_review", False)))
+            self.batch_pause.clear()
+            function = lambda: run_batch(self, str(args["batch_id"]))
+        elif kind == "one-click":
             if not retry:
                 selected = next((c for c in self.recorder_courses if str(c.get("course_id")) == str(args.get("course_id"))), None)
                 if selected is None:
@@ -356,9 +371,13 @@ class WebApp:
             function = lambda: self.sync(bool(args.get("offline")))
         elif kind == "review":
             function = lambda: (generate_review(self.course_dir, self._lecture_path(str(args["lecture"]))), "复习包已生成")[1]
+        elif kind == "browser-install":
+            function = install_browser
+        elif kind == "ffmpeg-install":
+            function = install_ffmpeg
         else:
             raise PipelineError("没有可重试任务，请从课程单元重新启动。")
-        labels = {"one-click": "一键完成录播学习资料", "build": "生成课程笔记", "sync": "同步并整理材料", "review": "生成复习包"}
+        labels = {"one-click": "一键完成录播学习资料", "build": "生成课程笔记", "sync": "同步并整理材料", "review": "生成复习包", "batch": "批量整理整门课", "browser-install": "安装浏览器组件", "ffmpeg-install": "安装 FFmpeg 组件"}
         self.runner.start(labels[kind], function, {"kind": kind, "args": args, "course": str(self.course_dir)})
 
     def settings_data(self) -> dict[str, Any]:
@@ -418,8 +437,9 @@ class WebApp:
         environment = os.environ.copy()
         environment["PKU_QT_MODE"] = "1"
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        command = [sys.executable, "--recorder-bridge", str(app_path)] if getattr(sys, "frozen", False) else [sys.executable, str(Path(__file__).with_name("recorder_bridge.py")), str(app_path)]
         self.recorder_process = subprocess.Popen(
-            [sys.executable, str(Path(__file__).with_name("recorder_bridge.py")), str(app_path)],
+            command,
             cwd=app_path.parent,
             env=environment,
             stdin=subprocess.DEVNULL,
@@ -463,17 +483,21 @@ class WebApp:
         return f"读取到 {len(self.recorder_courses)} 门课程、{count} 条录播"
 
     def _activate_course(self, title: str, profile: str) -> Path:
+        if profile not in {"general", "economics", "stem", "humanities", "law", "language"}:
+            raise PipelineError("请选择有效课程模板。")
         target = self.workspace_root / slugify(title)
         if not (target / "course.toml").exists():
             root = str(self.downloader_root) if self.downloader_root else ""
             init_course(target, title, profile, root)
         self.course_dir = target.resolve()
         self.config_path = self.course_dir / "course.toml"
+        save_course_options(self.course_dir, {"profile": profile, "terms": self.config.get("course", {}).get("terms", [])})
+        remember_course(self.course_dir)
         return self.course_dir
 
-    def one_click_process(self, course_id: str, recording_index: int, include_files: bool, profile: str, snapshot: dict | None = None) -> str:
+    def one_click_process(self, course_id: str, recording_index: int, include_files: bool, profile: str, snapshot: dict | None = None, additional_sources: list[Path] | None = None) -> str:
         try:
-            return run_recording(self, course_id, recording_index, include_files, profile, snapshot)
+            return run_recording(self, course_id, recording_index, include_files, profile, snapshot, additional_sources)
         except Exception:
             self.one_click_stage = "error"
             raise
@@ -499,6 +523,32 @@ class WebApp:
             path = base / "generated" / "draft.md"
         atomic_write(path, content)
         return str(path)
+
+    def local_courses(self) -> list[dict]:
+        result = []
+        for path in sorted(self.workspace_root.iterdir()):
+            if path.is_dir() and (path / "course.toml").is_file():
+                config = effective_config(path, read_toml(path / "course.toml"))
+                result.append({"name": path.name, "title": config.get("course", {}).get("title", path.name), "active": path == self.course_dir})
+        return result
+
+    def select_course(self, name: str) -> None:
+        if self.runner.running or self.watcher.running:
+            raise PipelineError("请先等待当前任务完成或暂停，再切换课程。")
+        target = (self.workspace_root / name).resolve()
+        if target.parent != self.workspace_root or not (target / "course.toml").is_file():
+            raise PipelineError("课程工作区不存在。")
+        self.course_dir, self.config_path = target, target / "course.toml"
+        remember_course(self.course_dir)
+
+    def course_options(self, title: str = "") -> dict:
+        target = self.workspace_root / slugify(title) if title else self.course_dir
+        if not (target / "course.toml").exists():
+            return {"profile": "general", "terms": [], "prompt": "", "exists": False}
+        config = effective_config(target, read_toml(target / "course.toml"))
+        prompt = target / "prompt.md"
+        return {"profile": config["course"].get("profile", "general"), "terms": config["course"].get("terms", []),
+                "prompt": prompt.read_text(encoding="utf-8") if prompt.exists() else "", "exists": True}
 
     def open_item(self, lecture: str, kind: str) -> str:
         if lecture:
@@ -589,9 +639,21 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         route = urlparse(self.path)
-        if route.path in {"/api/settings", "/api/materials", "/api/material", "/api/review"}:
+        if route.path in {"/api/settings", "/api/materials", "/api/material", "/api/review", "/api/runtime", "/api/update", "/api/courses/local", "/api/course/options"}:
             try:
                 query = parse_qs(route.query)
+                if route.path == "/api/runtime":
+                    self._json({"ok": True, **diagnostics()})
+                    return
+                if route.path == "/api/update":
+                    self._json({"ok": True, **check_update()})
+                    return
+                if route.path == "/api/courses/local":
+                    self._json({"ok": True, "courses": self.app.local_courses()})
+                    return
+                if route.path == "/api/course/options":
+                    self._json({"ok": True, **self.app.course_options(query.get("title", [""])[0])})
+                    return
                 if route.path == "/api/settings":
                     self._json({"ok": True, **self.app.settings_data()})
                     return
@@ -688,6 +750,25 @@ class Handler(SimpleHTTPRequestHandler):
             path = urlparse(self.path).path
             if path == "/api/sync":
                 self.app.schedule("sync", {"offline": bool(body.get("offline"))})
+            elif path == "/api/batch/start":
+                self.app.schedule("batch", body)
+            elif path == "/api/batch/pause":
+                self.app.batch_pause.set()
+            elif path == "/api/batch/resume":
+                status = batch_status(self.app)
+                if not status.get("available") or status.get("state") == "done":
+                    raise PipelineError("没有需要继续的批次。")
+                self.app.schedule("batch", {"batch_id": status["id"]})
+            elif path == "/api/course/select":
+                self.app.select_course(str(body.get("name", "")))
+            elif path == "/api/course/options":
+                if self.app.runner.running or self.app.watcher.running:
+                    raise PipelineError("请先结束当前任务，再修改课程模板。")
+                save_course_options(self.app.course_dir, body)
+            elif path == "/api/browser/install":
+                self.app.schedule("browser-install", {})
+            elif path == "/api/ffmpeg/install":
+                self.app.schedule("ffmpeg-install", {})
             elif path == "/api/build":
                 lecture = str(body.get("lecture", ""))
                 offline = bool(body.get("offline"))

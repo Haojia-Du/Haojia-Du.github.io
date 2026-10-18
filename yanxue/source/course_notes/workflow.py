@@ -10,14 +10,18 @@ from urllib.parse import urlencode, quote
 from .core import CoursePipeline, PipelineError, downloader_output_root, import_lecture, write_json
 
 
-def run_recording(app, course_id: str, recording_index: int, include_files: bool, profile: str, snapshot: dict | None = None) -> str:
+def recording_identity(course_id: str, rec: dict, include_files: bool) -> str:
+    return hashlib.sha256(json.dumps([course_id, rec.get("name"), rec.get("time"), include_files], ensure_ascii=False).encode()).hexdigest()[:20]
+
+
+def run_recording(app, course_id: str, recording_index: int, include_files: bool, profile: str, snapshot: dict | None = None, additional_sources: list[Path] | None = None) -> str:
     course = snapshot or next((c for c in app.recorder_courses if str(c.get("course_id")) == str(course_id)), None)
     if course is None or recording_index < 0 or recording_index >= len(course.get("recordings", [])):
         raise PipelineError("课程列表已过期，请重新读取课程并选择录播。")
     rec = course["recordings"][recording_index]
     title = course.get("name", "未命名课程")
     app._activate_course(title, profile)
-    identity = hashlib.sha256(json.dumps([course_id, rec.get("name"), rec.get("time"), include_files], ensure_ascii=False).encode()).hexdigest()[:20]
+    identity = recording_identity(course_id, rec, include_files)
     checkpoint_path = app.course_dir / (".recording-" + identity + ".json")
     checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8")) if checkpoint_path.exists() else {}
     if checkpoint.get("lecture"):
@@ -76,6 +80,8 @@ def run_recording(app, course_id: str, recording_index: int, include_files: bool
         lecture = import_lecture(app.course_dir, lecture_title + "_" + identity[:6], paths, link=True)
         checkpoint["lecture"] = lecture.name
         write_json(checkpoint_path, checkpoint)
+    if additional_sources:
+        import_lecture(app.course_dir, lecture.name, additional_sources, link=True)
     app.one_click_stage = "generating"
     app.events.add("开始转录与笔记生成；已完成的音频段和笔记段会自动复用。")
     CoursePipeline(app.course_dir).build(lecture, offline=False)

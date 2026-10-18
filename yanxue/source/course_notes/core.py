@@ -116,7 +116,12 @@ def extract_pdf(path: Path, image_dir: Path) -> list[Evidence]:
         try:
             import fitz  # type: ignore[no-redef]
         except ImportError:
-            raise PipelineError("处理 PDF 需要 PyMuPDF：pip install PyMuPDF") from exc
+            try:
+                from pypdf import PdfReader
+            except ImportError:
+                raise PipelineError("处理 PDF 需要 pypdf 或 PyMuPDF，请先安装文档组件。") from exc
+            return [Evidence(path.name, f"第 {i} 页", text, "slide") for i, page in enumerate(PdfReader(path).pages, 1)
+                    if (text := (page.extract_text() or "").strip())]
     image_dir.mkdir(parents=True, exist_ok=True)
     document = fitz.open(path)
     output: list[Evidence] = []

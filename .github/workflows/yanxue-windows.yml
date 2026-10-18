@@ -1,0 +1,43 @@
+name: Build optional Yanxue Windows installers
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'yanxue/source/**'
+      - '.github/workflows/yanxue-windows.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: yanxue/source
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install build dependencies
+        run: python -m pip install pyinstaller ".[documents,recorder]"
+      - name: Run recovery and batch checks
+        run: python -m unittest discover -s tests -v
+      - name: Build optional Windows packages
+        run: python scripts/build_windows.py
+      - name: Verify frozen application
+        run: python scripts/smoke_windows.py dist/windows/Yanxue/Yanxue.exe
+      - name: Publish Windows artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $version = python -c "from course_notes.version import VERSION; print(VERSION)"
+          $tag = "yanxue-v$version"
+          gh release view $tag --repo $env:GITHUB_REPOSITORY 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "Yanxue $version (optional Windows packages)" --notes "Optional per-user Windows installer and portable package. Source launcher remains available. Data stays under the Windows user profile."
+            if ($LASTEXITCODE -ne 0) { throw 'Release creation failed' }
+          }
+          gh release upload $tag dist/windows/Yanxue-Setup.exe dist/windows/yanxue-portable.zip --repo $env:GITHUB_REPOSITORY --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Artifact upload failed' }

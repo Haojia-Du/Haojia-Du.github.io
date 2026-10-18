@@ -16,7 +16,13 @@ def main() -> None:
         raise RuntimeError("无法加载 PKU-Recorder。")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
+    frozen = getattr(sys, "frozen", False)
+    try:
+        # External source must keep its own APP_DIR/settings instead of using our executable directory.
+        sys.frozen = False
+        spec.loader.exec_module(module)
+    finally:
+        sys.frozen = frozen
     if "/api/bridge/status" not in {rule.rule for rule in module.app.url_map.iter_rules()}:
         from flask import jsonify
 

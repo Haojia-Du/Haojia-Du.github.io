@@ -1,5 +1,6 @@
 {
-  "version": "0.2.0",
-  "sha256": "d37b2049a8d0b30f979ee371d78c163b889af23b559d5ed5e9a24608c7da06bc",
-  "files": 33
+  "version": "0.3.0",
+  "sha256": "4e0b4c94aba79f6aed2d66fa62ac38b2831f6ed29eeb7301c41c24980a9290ac",
+  "files": 43,
+  "optional_windows_release": "https://github.com/Haojia-Du/Haojia-Du.github.io/releases/tag/yanxue-v0.3.0"
 }

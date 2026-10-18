@@ -4,12 +4,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import urllib.request
 import webbrowser
 from pathlib import Path
 
 from .core import init_course
 from .webui import serve
+from .desktop import discover_tools
 
 
 def prepare_workspace(project: Path, downloader: str = "") -> Path:
@@ -18,17 +20,24 @@ def prepare_workspace(project: Path, downloader: str = "") -> Path:
     downloader = downloader or os.environ.get("PKU_RECORDER_ROOT", "") or settings.get("downloader_root", "")
     existing = project / "workspaces" / "中级宏观经济学"
     workspace = existing if (existing / "course.toml").exists() else project / "workspaces" / "我的课程"
+    if settings.get("current_course"):
+        candidate = (project / "workspaces" / settings["current_course"]).resolve()
+        if candidate.parent == (project / "workspaces").resolve() and (candidate / "course.toml").is_file():
+            workspace = candidate
     if not (workspace / "course.toml").exists():
         if downloader and (Path(downloader) / "app.py").is_file():
             downloader = str(Path(downloader).parent)
         init_course(workspace, "我的课程", "general", downloader)
-        settings_path.write_text(json.dumps({"downloader_root": downloader}, ensure_ascii=False, indent=2), encoding="utf-8")
+        settings["downloader_root"] = downloader
+        settings_path.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
     return workspace
 
 
 def main() -> None:
+    discover_tools()
     parser = argparse.ArgumentParser(description="启动燕学工作台")
-    parser.add_argument("--project", type=Path, default=Path.cwd())
+    default_project = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Yanxue" if getattr(sys, "frozen", False) else Path.cwd()
+    parser.add_argument("--project", type=Path, default=default_project)
     parser.add_argument("--downloader", default="")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--no-browser", action="store_true")
