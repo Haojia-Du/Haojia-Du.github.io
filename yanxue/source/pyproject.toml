@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "course-notes"
-version = "0.1.0"
+version = "0.2.0"
 description = "从课程录播、课件和转录稿自动生成可追溯的 Markdown 笔记"
 requires-python = ">=3.11"
 dependencies = []
@@ -21,5 +21,5 @@ course-notes = "course_notes.cli:main"
 packages = ["course_notes"]
 
 [tool.setuptools.package-data]
-course_notes = ["web/*.html", "web/*.css", "web/*.js"]
+course_notes = ["web/*.html", "web/*.css", "web/*.js", "web/vendor/*"]
 

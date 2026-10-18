@@ -14,6 +14,7 @@ workspaces/
 downloads/
 *.log
 local-settings.json
+local-task.json
 
 # 大型媒体、音频切片与页面渲染缓存
 workspaces/**/source/*.mp4

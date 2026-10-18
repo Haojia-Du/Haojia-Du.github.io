@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import mimetypes
+import re
 import os
 import shutil
 import subprocess
@@ -28,8 +31,13 @@ from .core import (
     init_course,
     read_toml,
     slugify,
+    write_json,
 )
 from .cli import sync_once
+from .settings import effective_config, load_settings, save_settings, settings_path
+from .materials import material_data, file_at
+from .study import generate_review
+from .workflow import run_recording
 
 
 WEB_ROOT = Path(__file__).with_name("web")
@@ -57,15 +65,28 @@ class EventLog:
 
 
 class BackgroundRunner:
-    def __init__(self, events: EventLog):
+    def __init__(self, events: EventLog, task_path: Path | None = None):
         self.events = events
         self._lock = threading.Lock()
         self.running = False
         self.action = ""
         self.error = ""
         self.finished_at: float | None = None
+        self.task_path = task_path
+        self.task: dict[str, Any] = {}
+        if task_path and task_path.exists():
+            self.task = json.loads(task_path.read_text(encoding="utf-8"))
+            self.action = self.task.get("action", "")
+            self.error = self.task.get("error", "")
+            if self.task.get("state") == "running":
+                self.error = "上次运行被中断，点击重试可继续处理。"
 
-    def start(self, action: str, function: Callable[[], Any]) -> None:
+    def _persist(self, state: str) -> None:
+        self.task.update(state=state, action=self.action, error=self.error)
+        if self.task_path:
+            write_json(self.task_path, self.task)
+
+    def start(self, action: str, function: Callable[[], Any], task: dict | None = None) -> None:
         with self._lock:
             if self.running:
                 raise PipelineError(f"已有任务正在执行：{self.action}")
@@ -73,6 +94,8 @@ class BackgroundRunner:
             self.action = action
             self.error = ""
             self.finished_at = None
+            self.task = task or {}
+            self._persist("running")
 
         def target() -> None:
             self.events.add(f"开始：{action}")
@@ -90,6 +113,7 @@ class BackgroundRunner:
                 with self._lock:
                     self.running = False
                     self.finished_at = time.time()
+                    self._persist("failed" if self.error else "done")
 
         threading.Thread(target=target, name=f"course-notes-{action}", daemon=True).start()
 
@@ -100,6 +124,7 @@ class BackgroundRunner:
                 "action": self.action,
                 "error": self.error,
                 "finished_at": self.finished_at,
+                "can_retry": bool(self.error and self.task.get("kind")),
             }
 
 
@@ -154,7 +179,7 @@ class WebApp:
         if not self.config_path.exists():
             raise PipelineError(f"找不到课程配置：{self.config_path}")
         self.events = EventLog()
-        self.runner = BackgroundRunner(self.events)
+        self.runner = BackgroundRunner(self.events, settings_path(self.course_dir).with_name("local-task.json"))
         self.watcher = WatchController(self)
         self.api_validation = "unknown"
         self.recorder_courses: list[dict[str, Any]] = []
@@ -166,7 +191,7 @@ class WebApp:
 
     @property
     def config(self) -> dict[str, Any]:
-        return read_toml(self.config_path)
+        return effective_config(self.course_dir, read_toml(self.config_path))
 
     @property
     def course_title(self) -> str:
@@ -246,7 +271,7 @@ class WebApp:
                 "path": str(self.course_dir),
             },
             "environment": {
-                "api_key_present": bool(os.environ.get("OPENAI_API_KEY")),
+                "api_key_present": bool(self.config.get("_api_key")),
                 "api_key_status": self.api_validation,
                 "ffmpeg": bool(shutil.which("ffmpeg")),
                 "pandoc": bool(shutil.which("pandoc")),
@@ -294,12 +319,54 @@ class WebApp:
 
     def check_key(self) -> str:
         try:
-            OpenAIProvider().validate_key()
+            OpenAIProvider(api_key=self.config.get("_api_key"), base_url=self.config.get("models", {}).get("base_url")).validate_key()
             self.api_validation = "valid"
             return "API Key 可用"
         except Exception:
             self.api_validation = "invalid"
             raise
+
+    def schedule(self, kind: str, args: dict[str, Any], retry: bool = False) -> None:
+        if self.runner.running:
+            raise PipelineError("已有任务正在执行，请等待完成。")
+        if self.watcher.running:
+            raise PipelineError("请先停止自动监听，再执行手动任务。")
+        if retry:
+            task = self.runner.task
+            kind, args = task.get("kind", ""), task.get("args", {})
+            course = Path(task.get("course", str(self.course_dir))).resolve()
+            if course.parent != self.workspace_root:
+                raise PipelineError("重试任务的课程目录无效。")
+            self.course_dir, self.config_path = course, course / "course.toml"
+        if kind == "one-click":
+            if not retry:
+                selected = next((c for c in self.recorder_courses if str(c.get("course_id")) == str(args.get("course_id"))), None)
+                if selected is None:
+                    raise PipelineError("请先读取课程。")
+                index = int(args.get("recording_index", -1))
+                if index < 0 or index >= len(selected.get("recordings", [])):
+                    raise PipelineError("请选择有效录播。")
+                rec = selected["recordings"][index]
+                args = {**args, "snapshot": {"course_id": selected["course_id"], "name": selected["name"],
+                        "recordings": [{k: rec.get(k, "") for k in ("name", "time", "teacher")} ]}, "recording_index": 0}
+            function = lambda: self.one_click_process(str(args["course_id"]), int(args["recording_index"]), bool(args.get("include_files", True)), str(args.get("profile", "general")), args["snapshot"])
+        elif kind == "build":
+            function = lambda: self.build(str(args["lecture"]), bool(args.get("offline")), bool(args.get("force")))
+        elif kind == "sync":
+            function = lambda: self.sync(bool(args.get("offline")))
+        elif kind == "review":
+            function = lambda: (generate_review(self.course_dir, self._lecture_path(str(args["lecture"]))), "复习包已生成")[1]
+        else:
+            raise PipelineError("没有可重试任务，请从课程单元重新启动。")
+        labels = {"one-click": "一键完成录播学习资料", "build": "生成课程笔记", "sync": "同步并整理材料", "review": "生成复习包"}
+        self.runner.start(labels[kind], function, {"kind": kind, "args": args, "course": str(self.course_dir)})
+
+    def settings_data(self) -> dict[str, Any]:
+        config = self.config
+        saved = load_settings(self.course_dir)
+        return {"downloader_root": str(self.downloader_root or ""), "models": {**config.get("models", {}), "base_url": config.get("models", {}).get("base_url") or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")},
+                "has_key": bool(config.get("_api_key")), "remembered": bool(saved.get("encrypted_api_key")),
+                "ffmpeg": bool(shutil.which("ffmpeg")), "ffprobe": bool(shutil.which("ffprobe"))}
 
     def _recorder_api(
         self,
@@ -404,82 +471,9 @@ class WebApp:
         self.config_path = self.course_dir / "course.toml"
         return self.course_dir
 
-    def one_click_process(
-        self,
-        course_id: str,
-        recording_index: int,
-        include_files: bool,
-        profile: str,
-    ) -> str:
+    def one_click_process(self, course_id: str, recording_index: int, include_files: bool, profile: str, snapshot: dict | None = None) -> str:
         try:
-            course = next((item for item in self.recorder_courses if item.get("course_id") == course_id), None)
-            if course is None:
-                raise PipelineError("课程列表已过期，请重新读取课程。")
-            recordings = course.get("recordings", [])
-            if recording_index < 0 or recording_index >= len(recordings):
-                raise PipelineError("请选择一条录播。")
-            recording = recordings[recording_index]
-            course_name = course.get("name", "未命名课程")
-            self._activate_course(course_name, profile)
-
-            before = self._recorder_api("/api/bridge/status", timeout=5).get("jobs", [])
-            before_ids = {item.get("id") for item in before}
-            items = [{
-                "type": "video",
-                "course_id": course_id,
-                "course_name": course_name,
-                "name": recording.get("name", "课堂实录"),
-                "time": recording.get("time", ""),
-                "teacher": recording.get("teacher", ""),
-            }]
-            self.one_click_stage = "collecting"
-            if include_files:
-                query = "?" + urlencode({"course_id": course_id, "course_name": course_name})
-                files = self._recorder_api("/api/course_files" + query, timeout=360).get("files", [])
-                items.extend({
-                    "type": "file",
-                    "course_id": course_id,
-                    "course_name": course_name,
-                    "name": item.get("name", "课程文件"),
-                    "url": item.get("url", ""),
-                    "source": item.get("source", ""),
-                } for item in files)
-
-            self.one_click_stage = "downloading"
-            response = self._recorder_api("/api/download", method="POST", payload={"items": items}, timeout=30)
-            self.events.add(f"已提交 {response.get('added', len(items))} 个下载任务。")
-            tracked_ids: set[str] = set()
-            deadline = time.time() + 3 * 60 * 60
-            last_summary = ""
-            while time.time() < deadline:
-                status = self._recorder_api("/api/bridge/status", timeout=10)
-                new_jobs = [item for item in status.get("jobs", []) if item.get("id") not in before_ids]
-                if new_jobs:
-                    tracked_ids.update(str(item.get("id")) for item in new_jobs)
-                tracked = [item for item in status.get("jobs", []) if str(item.get("id")) in tracked_ids]
-                summary = "、".join(f"{item.get('rec_name', '任务')} {item.get('progress', 0)}%" for item in tracked)
-                if summary and summary != last_summary:
-                    self.events.add("下载进度：" + summary)
-                    last_summary = summary
-                if tracked and all(item.get("status") in {"done", "failed", "canceled"} for item in tracked):
-                    failed = [item for item in tracked if item.get("status") != "done"]
-                    if failed:
-                        names = "、".join(item.get("rec_name", "未知任务") for item in failed)
-                        raise PipelineError(f"部分下载任务失败：{names}")
-                    break
-                time.sleep(4)
-            else:
-                raise PipelineError("等待下载完成超时。")
-
-            self.one_click_stage = "generating"
-            settle_seconds = int(self.config.get("automation", {}).get("settle_seconds", 30))
-            self.events.add("下载完成，正在等待材料写入稳定后自动整理。")
-            time.sleep(max(0, settle_seconds) + 1)
-            imported = sync_once(self.course_dir, course_name, build=True, offline=False)
-            if not imported:
-                raise PipelineError("下载已完成，但没有发现新的可处理材料。")
-            self.one_click_stage = "done"
-            return f"{course_name}｜{recording.get('name', '课堂实录')} 已生成"
+            return run_recording(self, course_id, recording_index, include_files, profile, snapshot)
         except Exception:
             self.one_click_stage = "error"
             raise
@@ -490,6 +484,7 @@ class WebApp:
             "draft": base / "generated" / "draft.md",
             "qa": base / "generated" / "qa_report.md",
             "final": base / "final" / "notes.md",
+            "review": base / "generated" / "review.md",
         }
         path = choices.get(kind)
         if path is None or not path.exists():
@@ -594,6 +589,32 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         route = urlparse(self.path)
+        if route.path in {"/api/settings", "/api/materials", "/api/material", "/api/review"}:
+            try:
+                query = parse_qs(route.query)
+                if route.path == "/api/settings":
+                    self._json({"ok": True, **self.app.settings_data()})
+                    return
+                lecture = self.app._lecture_path(query.get("lecture", [""])[0])
+                if route.path == "/api/materials":
+                    self._json({"ok": True, **material_data(lecture)})
+                elif route.path == "/api/material":
+                    self._send_material(file_at(lecture, int(query.get("index", ["-1"])[0])))
+                else:
+                    review = lecture / "generated" / "review.json"
+                    if not review.exists():
+                        self._json({"ok": True, "available": False})
+                        return
+                    data = json.loads(review.read_text(encoding="utf-8"))
+                    note = lecture / "final" / "notes.md"
+                    if not note.exists():
+                        note = lecture / "generated" / "draft.md"
+                    data["stale"] = not note.exists() or hashlib.sha256(note.read_text(encoding="utf-8").encode()).hexdigest() != data.get("note_sha256")
+                    progress = lecture / "review-progress.json"
+                    self._json({"ok": True, "available": True, **data, "progress": json.loads(progress.read_text(encoding="utf-8")) if progress.exists() else {}})
+            except (PipelineError, ValueError, OSError) as exc:
+                self._json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
         if route.path == "/api/status":
             self._json({"ok": True, **self.app.status()})
             return
@@ -616,18 +637,83 @@ class Handler(SimpleHTTPRequestHandler):
             return
         super().do_GET()
 
+    def _send_material(self, path: Path) -> None:
+        size = path.stat().st_size
+        start, end = 0, size - 1
+        partial = self.headers.get("Range", "")
+        if partial:
+            match = re.fullmatch(r"bytes=(\d*)-(\d*)", partial)
+            if not match or not any(match.groups()):
+                self.send_error(416)
+                return
+            left, right = match.groups()
+            if left:
+                start = int(left)
+                end = min(int(right), size - 1) if right else size - 1
+            else:
+                start = max(0, size - int(right))
+            if start > end or start >= size:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.end_headers()
+                return
+        self.send_response(206 if partial else 200)
+        self.send_header("Content-Type", mimetypes.guess_type(path.name)[0] or "application/octet-stream")
+        self.send_header("Content-Length", str(max(0, end - start + 1)))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "no-store")
+        if partial:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.end_headers()
+        try:
+            with path.open("rb") as source:
+                source.seek(start)
+                remaining = end - start + 1
+                while remaining > 0:
+                    block = source.read(min(1024 * 1024, remaining))
+                    if not block:
+                        break
+                    self.wfile.write(block)
+                    remaining -= len(block)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def do_POST(self) -> None:
         try:
+            origin = self.headers.get("Origin")
+            if origin and origin != "http://" + self.headers.get("Host", ""):
+                raise PipelineError("请在本机工作台页面执行此操作。")
             body = self._body()
             path = urlparse(self.path).path
             if path == "/api/sync":
-                offline = bool(body.get("offline"))
-                self.app.runner.start("同步下载器并生成笔记", lambda: self.app.sync(offline))
+                self.app.schedule("sync", {"offline": bool(body.get("offline"))})
             elif path == "/api/build":
                 lecture = str(body.get("lecture", ""))
                 offline = bool(body.get("offline"))
                 force = bool(body.get("force"))
-                self.app.runner.start(f"构建 {lecture}", lambda: self.app.build(lecture, offline, force))
+                self.app.schedule("build", {"lecture": lecture, "offline": offline, "force": force})
+            elif path == "/api/retry":
+                self.app.schedule("", {}, retry=True)
+            elif path == "/api/settings":
+                if self.app.runner.running or self.app.watcher.running:
+                    raise PipelineError("请等待当前处理结束，再修改连接设置。")
+                save_settings(self.app.course_dir, body)
+                self.app.api_validation = "unknown"
+            elif path == "/api/review/generate":
+                self.app.schedule("review", {"lecture": str(body.get("lecture", ""))})
+            elif path == "/api/review/progress":
+                lecture_path = self.app._lecture_path(str(body.get("lecture", "")))
+                review = json.loads((lecture_path / "generated" / "review.json").read_text(encoding="utf-8"))
+                index = int(body.get("index", -1))
+                if index < 0 or index >= len(review.get("cards", [])) or body.get("rating") not in {"again", "known"}:
+                    raise PipelineError("复习卡片记录无效。")
+                progress_path = lecture_path / "review-progress.json"
+                progress = json.loads(progress_path.read_text(encoding="utf-8")) if progress_path.exists() else {}
+                card = review["cards"][index]
+                identity = hashlib.sha256(json.dumps(card, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+                progress[identity] = {"rating": body["rating"], "updated_at": time.time(), "index": index}
+                write_json(progress_path, progress)
             elif path == "/api/finalize":
                 lecture = str(body.get("lecture", ""))
                 self.app.runner.start(f"定稿 {lecture}", lambda: self.app.finalize(lecture))
@@ -643,7 +729,7 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json({"ok": True, "target": target})
                 return
             elif path == "/api/check-key":
-                self.app.runner.start("验证 API Key", self.app.check_key)
+                self.app.check_key()
             elif path == "/api/recorder/start":
                 self.app.runner.start("启动教学网连接", self.app.start_recorder)
             elif path == "/api/recorder/login":
@@ -662,11 +748,7 @@ class Handler(SimpleHTTPRequestHandler):
                 recording_index = int(body.get("recording_index", -1))
                 include_files = bool(body.get("include_files", True))
                 profile = str(body.get("profile", "general"))
-                self.app.one_click_stage = "queued"
-                self.app.runner.start(
-                    "一键完成录播学习资料",
-                    lambda: self.app.one_click_process(course_id, recording_index, include_files, profile),
-                )
+                self.app.schedule("one-click", {"course_id": course_id, "recording_index": recording_index, "include_files": include_files, "profile": profile})
             elif path == "/api/note/save":
                 lecture = str(body.get("lecture", ""))
                 content = str(body.get("content", ""))
@@ -682,7 +764,7 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json({"ok": False, "error": "接口不存在。"}, HTTPStatus.NOT_FOUND)
                 return
             self._json({"ok": True})
-        except (PipelineError, json.JSONDecodeError, OSError) as exc:
+        except (PipelineError, ValueError, OSError) as exc:
             self._json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
         except Exception as exc:
             self.app.events.add(traceback.format_exc(limit=4), "debug")

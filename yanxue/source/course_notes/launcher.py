@@ -19,14 +19,6 @@ def prepare_workspace(project: Path, downloader: str = "") -> Path:
     existing = project / "workspaces" / "中级宏观经济学"
     workspace = existing if (existing / "course.toml").exists() else project / "workspaces" / "我的课程"
     if not (workspace / "course.toml").exists():
-        if not downloader:
-            import tkinter as tk
-            from tkinter import filedialog
-
-            root = tk.Tk()
-            root.withdraw()
-            downloader = filedialog.askdirectory(title="选择已有 PKU-Recorder 所在目录；取消后仍可导入本地材料")
-            root.destroy()
         if downloader and (Path(downloader) / "app.py").is_file():
             downloader = str(Path(downloader).parent)
         init_course(workspace, "我的课程", "general", downloader)

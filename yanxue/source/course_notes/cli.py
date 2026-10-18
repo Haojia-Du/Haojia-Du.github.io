@@ -18,6 +18,7 @@ from .core import (
     import_lecture,
     init_course,
     read_toml,
+    write_json,
 )
 
 
@@ -72,7 +73,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def sync_once(course: Path, course_name: str, build: bool, offline: bool) -> list[Path]:
-    config = read_toml(course / "course.toml")
+    from .settings import effective_config
+    config = effective_config(course, read_toml(course / "course.toml"))
     root_value = config.get("automation", {}).get("downloader_root", "")
     if not root_value:
         raise PipelineError("course.toml 尚未配置 automation.downloader_root。")
@@ -108,15 +110,22 @@ def sync_once(course: Path, course_name: str, build: bool, offline: bool) -> lis
     imported: list[Path] = []
     for title, entries in ready.items():
         lecture = import_lecture(course, title, [entry[0] for entry in entries], link=True)
+        imported.append(lecture)
+        if build:
+            print(f"构建：{lecture.name}")
+            CoursePipeline(course).build(lecture, offline=offline)
         for _, key, marker in entries:
             state["files"][key] = marker
-        imported.append(lecture)
-    state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    if build:
-        pipeline = CoursePipeline(course)
-        for lecture in sorted(set(imported)):
-            print(f"构建：{lecture.name}")
-            pipeline.build(lecture, offline=offline)
+        write_json(state_path, state)
+    if build and not offline:
+        for lecture in sorted((course / "lectures").iterdir()):
+            if not lecture.is_dir() or lecture in imported or not (lecture / "source").exists():
+                continue
+            progress_path = lecture / ".course-notes-state.json"
+            progress = json.loads(progress_path.read_text(encoding="utf-8")) if progress_path.exists() else {}
+            if not progress or progress.get("offline"):
+                CoursePipeline(course).build(lecture, offline=False)
+                imported.append(lecture)
     return imported
 
 

@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>燕学 · 北京大学学习工作台</title>
   <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/vendor/Temml-Local.css">
 </head>
 <body>
   <div class="shell">
@@ -16,6 +17,7 @@
         <button class="nav-item" data-scroll="lectures"><span>▤</span> 笔记书架</button>
         <button class="nav-item" data-scroll="importer"><span>＋</span> 其他材料</button>
         <button class="nav-item" data-scroll="activity"><span>›_</span> 运行记录</button>
+        <button class="nav-item" data-scroll="connections"><span>⚙</span> 连接设置</button>
       </nav>
       <div class="sidebar-foot"><div class="tiny-label">当前课程</div><div id="side-course" class="side-course">正在读取…</div><button class="ghost full" id="open-course">打开工作目录</button></div>
     </aside>
@@ -25,6 +27,7 @@
         <div><div class="eyebrow">PEKING UNIVERSITY · LOCAL FIRST</div><h1>燕学工作台</h1><p id="subtitle">从教学网录播到可复习笔记，全程停留在这一个页面。</p></div>
         <div class="header-actions"><button class="ghost" id="refresh">刷新状态</button><button class="primary" id="toggle-watch"><span class="pulse"></span><span>开启自动处理</span></button></div>
       </header>
+      <div id="task-error" class="section error-banner hidden"><div><b>处理未完成</b><p id="task-error-message"></p></div><button id="retry-task" class="primary">从断点重试</button></div>
 
       <section id="campus" class="section campus-panel">
         <div class="campus-head"><div><span class="eyebrow light">ONE-CLICK LECTURE</span><h2>选择一节课，剩下的交给工作台。</h2><p>连接教学网后，录播下载、课件汇集、语音转录、笔记生成和质量检查会依次自动完成。</p></div><div id="recorder-chip" class="connection-chip"><span></span><b>正在检查</b></div></div>
@@ -61,14 +64,39 @@
 
       <section id="importer" class="section two-column">
         <article class="panel import-panel"><div class="section-head compact"><div><span class="eyebrow">ANY COURSE</span><h2>导入其他材料</h2></div></div><p>也适用于网课、讲座、访谈和非理科课程。大文件只建立引用，不重复复制。</p><label>课程单元名称<input id="import-title" placeholder="例如：第二讲，古典主义与浪漫主义"></label><label>已选择文件<textarea id="import-paths" rows="4" placeholder="选择视频、音频、课件、文档或已有转录稿" readonly></textarea></label><div class="row-actions"><button class="ghost" id="pick-files">选择文件</button><button class="primary" id="import-files">导入材料</button></div></article>
-        <article class="panel settings-panel"><div class="section-head compact"><div><span class="eyebrow">CURRENT PROFILE</span><h2>当前工作区</h2></div></div><dl><div><dt>课程</dt><dd id="config-title">—</dd></div><div><dt>笔记类型</dt><dd id="config-profile">—</dd></div><div><dt>生成策略</dt><dd>分段生成＋独立审计</dd></div><div><dt>数据位置</dt><dd id="config-path" class="path">—</dd></div></dl><div class="notice">课程文件、账号连接和生成结果均保留在本机。API Key 只从系统环境变量读取。</div></article>
+        <article class="panel settings-panel"><div class="section-head compact"><div><span class="eyebrow">CURRENT PROFILE</span><h2>当前工作区</h2></div></div><dl><div><dt>课程</dt><dd id="config-title">—</dd></div><div><dt>笔记类型</dt><dd id="config-profile">—</dd></div><div><dt>生成策略</dt><dd>分段生成＋独立审计</dd></div><div><dt>数据位置</dt><dd id="config-path" class="path">—</dd></div></dl><div class="notice">课程文件在本机保存。正式 AI 生成会将音频与所需文本发送给连接设置中的服务。</div></article>
+      </section>
+
+      <section id="connections" class="section panel">
+        <div class="section-head"><div><span class="eyebrow">CONNECTIONS</span><h2>连接设置</h2></div><span id="connection-summary" class="notice">正在读取</span></div>
+        <form id="settings-form" class="settings-grid">
+          <label class="wide">PKU-Recorder 项目目录<input id="setting-downloader" placeholder="包含 pku_recorder_app 的文件夹"></label>
+          <label class="wide">AI 服务地址<input id="setting-base-url" placeholder="https://api.openai.com/v1" autocomplete="off"></label>
+          <label class="wide">API Key<input id="setting-key" type="password" placeholder="留空保留当前密钥" autocomplete="off"></label>
+          <label>笔记模型<input id="setting-writer" placeholder="gpt-5-mini"></label>
+          <label>质检模型<input id="setting-reviewer" placeholder="gpt-5-mini"></label>
+          <label>转录模型<input id="setting-transcriber" placeholder="gpt-transcribe"></label>
+          <label class="setting-check wide"><input type="checkbox" id="setting-remember">用 Windows 加密保存新密钥，下次自动读取</label>
+          <div class="wide row-actions"><button type="button" class="ghost" id="clear-key">移除已保存密钥</button><button type="button" class="ghost" id="test-connection">保存并测试连接</button><button class="primary" type="submit">保存设置</button></div>
+        </form>
+        <p class="settings-help">密钥留空时保留现有值；输入新密钥且不勾选保存时，只用于本次运行。连接测试不生成内容；模型是否支持转录与结构化输出会在实际任务中验证。</p>
       </section>
 
       <section id="activity" class="section"><div class="section-head"><div><span class="eyebrow">ACTIVITY</span><h2>运行记录</h2></div><div id="job-chip" class="job-chip idle"><span></span>空闲</div></div><div class="terminal" id="terminal"><div class="log muted">等待操作…</div></div></section>
     </main>
   </div>
-  <div id="note-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="note-title"><div class="modal-card"><div class="modal-head"><div><span id="note-kind" class="eyebrow">MARKDOWN NOTE</span><h2 id="note-title">课程笔记</h2></div><button id="close-note" class="icon-button" aria-label="关闭">×</button></div><textarea id="note-editor" spellcheck="false"></textarea><div class="modal-actions"><span id="note-path"></span><button class="ghost" id="save-draft">保存修改</button><button class="primary" id="save-final">保存为定稿</button></div></div></div>
+  <div id="note-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="note-title"><div class="modal-card workbench">
+    <div class="modal-head"><div><span id="note-kind" class="eyebrow">STUDY DESK</span><h2 id="note-title">课程学习台</h2></div><button id="close-note" class="icon-button" aria-label="关闭">×</button></div>
+    <div class="workbench-body">
+      <aside class="source-pane"><div class="pane-label">录播与课件</div><select id="material-select" aria-label="选择来源材料"></select><video id="source-video" controls preload="metadata" class="hidden"></video><iframe id="source-pdf" title="课件预览" class="hidden"></iframe><div id="source-evidence" class="source-evidence"></div><div id="source-locators" class="source-locators"></div></aside>
+      <section class="note-pane"><div class="note-tabs"><button data-note-tab="preview" class="active">阅读</button><button data-note-tab="edit">编辑</button><button data-note-tab="review">复习</button><button id="generate-review" class="mini">生成复习包</button></div><div id="note-preview" class="markdown-view"></div><textarea id="note-editor" class="hidden" spellcheck="false" aria-label="编辑笔记"></textarea><div id="review-panel" class="hidden"></div></section>
+    </div>
+    <div class="modal-actions"><span id="note-path"></span><button class="ghost" id="save-draft">保存修改</button><button class="primary" id="save-final">保存为定稿</button></div>
+  </div></div>
   <div id="toast" class="toast"></div>
+  <script src="/vendor/markdown-it.min.js"></script>
+  <script src="/vendor/temml.min.js"></script>
   <script src="/app.js"></script>
+  <script src="/study-desk.js"></script>
 </body>
 </html>

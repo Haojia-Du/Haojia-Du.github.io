@@ -191,23 +191,40 @@ def split_audio(path: Path, output_dir: Path, minutes: int = 12) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     pattern = output_dir / "chunk_%03d.mp3"
     expected = sorted(output_dir.glob("chunk_*.mp3"))
-    if expected:
+    if expected and (output_dir / ".complete").exists():
         return expected
     run_checked([
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(path),
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(path),
         "-vn", "-ac", "1", "-ar", "16000", "-b:a", "48k",
         "-f", "segment", "-segment_time", str(minutes * 60), "-reset_timestamps", "1",
         str(pattern),
     ])
+    atomic_write(output_dir / ".complete", "complete")
     return sorted(output_dir.glob("chunk_*.mp3"))
 
 
 class OpenAIProvider:
     def __init__(self, api_key: str | None = None, base_url: str | None = None):
-        self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
+        self.api_key = api_key if api_key is not None else os.environ.get("OPENAI_API_KEY", "")
         self.base_url = (base_url or os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
         if not self.api_key:
             raise PipelineError("没有检测到 OPENAI_API_KEY；可使用 --offline 只生成证据包。")
+
+    def _open(self, request: urllib.request.Request, timeout: int):
+        for attempt in range(3):
+            try:
+                return urllib.request.urlopen(request, timeout=timeout)
+            except urllib.error.HTTPError as exc:
+                if exc.code in {429, 500, 502, 503, 504} and attempt < 2:
+                    exc.close()
+                    time.sleep(2 ** attempt)
+                    continue
+                exc.close()
+                messages = {401: "密钥无效或已过期，请在连接设置中更新", 403: "没有权限访问该服务或模型",
+                            429: "服务额度或请求速率受限，请稍后重试"}
+                raise PipelineError(f"AI 服务 HTTP {exc.code}：{messages.get(exc.code, '请求失败，请检查服务地址与模型名称后重试')}") from None
+            except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+                raise PipelineError("AI 服务连接中断，请检查网络后点击重试；已完成的分段会保留。") from None
 
     def _request_json(self, endpoint: str, payload: dict[str, Any], timeout: int = 300) -> dict[str, Any]:
         request = urllib.request.Request(
@@ -217,7 +234,7 @@ class OpenAIProvider:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with self._open(request, timeout=timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
@@ -230,7 +247,7 @@ class OpenAIProvider:
             method="GET",
         )
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
+            with self._open(request, timeout=30) as response:
                 if response.status != 200:
                     raise PipelineError(f"API 连通性检查失败：HTTP {response.status}")
         except urllib.error.HTTPError as exc:
@@ -301,7 +318,7 @@ class OpenAIProvider:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=900) as response:
+            with self._open(request, timeout=900) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
@@ -348,7 +365,7 @@ PROFILE_RULES = {
 
 BASE_INSTRUCTIONS = """你是严谨的课程笔记编辑。只能把给定材料作为教师讲授内容的证据；外部常识若确有必要，必须明确写成“补充说明”。不得编造引用、例子、课程要求或教师观点。
 
-输出简体中文 Markdown 正文。恢复讲解逻辑，不要逐句摘要。首次出现的术语需要准确解释，重要英文术语可在括号中保留。每个公式必须使用 LaTeX，并解释所有符号、成立条件、直觉与用途。尽量使用完整段落，少用加粗与列表，使用中文标点。识别错误若无法确定，写成〔存疑：……〕。正文标题从二级标题开始。"""
+输出简体中文 Markdown 正文。恢复讲解逻辑，不要逐句摘要。首次出现的术语需要准确解释，重要英文术语可在括号中保留。每个公式必须使用 LaTeX，并解释所有符号、成立条件、直觉与用途。尽量使用完整段落，少用加粗与列表，使用中文标点。识别错误若无法确定，写成〔存疑：……〕。正文标题从二级标题开始。每个知识点末尾用〔来源：材料文件名｜页码或时间范围〕标注给定证据中的定位，不得编造定位。"""
 
 
 def make_chunks(evidence: list[Evidence], maximum_chars: int = 18000) -> list[list[Evidence]]:
@@ -405,7 +422,8 @@ class CoursePipeline:
         config_path = self.course_dir / "course.toml"
         if not config_path.exists():
             raise PipelineError(f"找不到课程配置：{config_path}")
-        self.config = read_toml(config_path)
+        from .settings import effective_config
+        self.config = effective_config(self.course_dir, read_toml(config_path))
 
     def build(self, lecture_dir: Path, *, offline: bool = False, force: bool = False) -> Path:
         lecture_dir = lecture_dir.resolve()
@@ -445,7 +463,9 @@ class CoursePipeline:
             manifest[key] = file_hash(path)
         state_path = lecture_dir / ".course-notes-state.json"
         previous = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
-        config_digest = file_hash(self.course_dir / "course.toml")
+        config_digest = hashlib.sha256(json.dumps({k: v for k, v in self.config.items() if not k.startswith("_")}, sort_keys=True).encode()).hexdigest()
+        prompt_path = self.course_dir / "prompt.md"
+        config_digest += file_hash(prompt_path) if prompt_path.exists() else ""
         signature = hashlib.sha256(json.dumps([manifest, config_digest], sort_keys=True).encode()).hexdigest()
         draft_path = generated_dir / "draft.md"
         if (
@@ -456,24 +476,30 @@ class CoursePipeline:
         ):
             return draft_path
 
-        provider = None if offline else OpenAIProvider(base_url=self.config.get("models", {}).get("base_url") or None)
+        provider = None if offline else OpenAIProvider(api_key=self.config.get("_api_key"), base_url=self.config.get("models", {}).get("base_url") or None)
         evidence: list[Evidence] = []
         image_dir = extracted_dir / "slide_images"
         for path in files:
             if path.suffix.lower() in DOCUMENT_EXTENSIONS:
                 evidence.extend(extract_document(path, image_dir))
             elif path.suffix.lower() in MEDIA_EXTENSIONS:
-                transcript_file = extracted_dir / f"{path.stem}.transcript.json"
+                model = self.config.get("models", {}).get("transcriber", "gpt-transcribe")
+                terms = ", ".join(self.config.get("course", {}).get("terms", []))
+                media_key = hashlib.sha256((file_hash(path) + model + terms + str(self.config.get("models", {}).get("base_url", ""))).encode()).hexdigest()[:20]
+                transcript_file = extracted_dir / f"{path.stem}.{media_key}.transcript.json"
                 if transcript_file.exists() and not force:
                     transcript = json.loads(transcript_file.read_text(encoding="utf-8"))
                 elif provider is not None:
-                    chunks = split_audio(path, extracted_dir / f"{path.stem}_audio")
-                    model = self.config.get("models", {}).get("transcriber", "gpt-transcribe")
-                    terms = ", ".join(self.config.get("course", {}).get("terms", []))
+                    chunks = split_audio(path, extracted_dir / f"{path.stem}_{media_key}_audio")
                     transcript_chunks = []
                     offset = 0.0
                     for chunk in chunks:
-                        result = provider.transcribe(chunk, model=model, prompt=terms)
+                        partial = chunk.with_suffix(".transcript.json")
+                        if partial.exists() and not force:
+                            result = json.loads(partial.read_text(encoding="utf-8"))
+                        else:
+                            result = provider.transcribe(chunk, model=model, prompt=terms)
+                            write_json(partial, result)
                         duration = media_duration(chunk)
                         transcript_chunks.append({
                             "start": offset,
@@ -511,7 +537,8 @@ class CoursePipeline:
             section_dir.mkdir(parents=True, exist_ok=True)
             sections: list[dict[str, Any]] = []
             for index, chunk in enumerate(make_chunks(evidence), 1):
-                cache = section_dir / f"{index:03d}.json"
+                section_key = hashlib.sha256((evidence_as_text(chunk) + custom + profile_rule + model + BASE_INSTRUCTIONS + str(self.config.get("models", {}).get("base_url", ""))).encode()).hexdigest()[:20]
+                cache = section_dir / f"{index:03d}_{section_key}.json"
                 if cache.exists() and not force:
                     section = json.loads(cache.read_text(encoding="utf-8"))
                 else:

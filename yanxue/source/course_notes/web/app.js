@@ -53,6 +53,8 @@ function renderLectures(lectures) {
   body.innerHTML = lectures.map(item => {
     const actions = [
       item.has_draft ? actionButton("在此阅读", "open-draft", item.name) : actionButton("正式生成", "build", item.name),
+      item.status === "offline" ? actionButton("正式生成", "build", item.name, "secondary") : "",
+      item.has_final ? actionButton("阅读定稿", "open-final", item.name) : "",
       item.has_qa ? actionButton("查看质检", "open-qa", item.name, "secondary") : "",
       item.has_draft ? actionButton("定稿", "finalize", item.name, "secondary") : actionButton("离线提取", "offline", item.name, "secondary"),
       actionButton("文件夹", "open-folder", item.name, "secondary")
@@ -117,14 +119,14 @@ function render(data) {
   snapshot = data;
   const { course, environment, lectures, job, watcher, recorder } = data;
   $("#side-course").textContent = course.title;
-  $("#subtitle").textContent = `${course.title} · ${profileNames[course.profile] || course.profile} · 文件只保留在本机`;
+  $("#subtitle").textContent = `${course.title} · ${profileNames[course.profile] || course.profile} · 本机学习台`;
   $("#config-title").textContent = course.title;
   $("#config-profile").textContent = profileNames[course.profile] || course.profile;
   $("#config-path").textContent = course.path;
 
   const keyStatus = environment.api_key_status;
   $("#api-status").textContent = keyStatus === "valid" ? "可用" : (keyStatus === "invalid" ? "无效" : (environment.api_key_present ? "已配置" : "未配置"));
-  $("#api-detail").textContent = keyStatus === "valid" ? "已通过联网验证" : (keyStatus === "invalid" ? "请更新 API Key" : (environment.api_key_present ? "建议验证有效性" : "请设置 OPENAI_API_KEY"));
+  $("#api-detail").textContent = keyStatus === "valid" ? "连接验证通过" : (keyStatus === "invalid" ? "请在连接设置中更新" : (environment.api_key_present ? "可在连接设置中测试" : "请在下方连接设置中填写"));
   $("#downloader-status").textContent = recorder.running ? (recorder.logged_in ? "已登录" : "已启动") : (environment.downloader_exists ? "可启动" : "未配置");
   $("#downloader-detail").textContent = recorder.logged_in ? (recorder.semester || "教学网会话有效") : "本机 PKU-Recorder";
   $("#material-count").textContent = environment.detected_materials;
@@ -141,6 +143,10 @@ function render(data) {
   const watchButton = $("#toggle-watch");
   watchButton.querySelector("span:last-child").textContent = watcher.running ? "停止自动处理" : "开启自动处理";
   watchButton.classList.toggle("watching", watcher.running);
+  $("#task-error").classList.toggle("hidden", !job.error || job.running);
+  $("#task-error-message").textContent = job.error || "";
+  $("#retry-task").classList.toggle("hidden", !job.can_retry);
+  if (typeof updateStudyStatus === "function") updateStudyStatus(job);
 }
 
 async function refresh() {
@@ -187,13 +193,16 @@ async function openNote(lecture, kind) {
     $("#save-final").classList.toggle("hidden", kind === "qa");
     $("#note-modal").classList.remove("hidden");
     document.body.classList.add("modal-open");
+    await loadStudyDesk(lecture, kind, data.content);
   } catch (error) { notify(error.message, true); }
 }
 
 async function saveNote(finalize) {
   if (!noteContext) return;
+  finalize = finalize || noteContext.kind === "final";
   const result = await post("/api/note/save", { lecture: noteContext.lecture, content: $("#note-editor").value, finalize }, finalize ? "已保存为定稿" : "修改已保存");
   if (result && finalize) noteContext.kind = "final";
+  if (result) renderNotePreview();
 }
 
 document.addEventListener("click", event => {
@@ -205,6 +214,7 @@ document.addEventListener("click", event => {
   if (action === "offline") post("/api/build", { lecture, offline: true, force: false }, "离线提取任务已提交");
   if (action === "finalize") post("/api/finalize", { lecture }, "已提交定稿");
   if (action === "open-draft") openNote(lecture, "draft");
+  if (action === "open-final") openNote(lecture, "final");
   if (action === "open-qa") openNote(lecture, "qa");
   if (action === "open-folder") post("/api/open", { lecture, kind: "folder" }, "正在打开文件夹");
 });
@@ -243,7 +253,7 @@ $("#import-files").addEventListener("click", () => {
   post("/api/import", { title, paths: selectedPaths }, "材料导入任务已提交");
 });
 
-$("#close-note").addEventListener("click", () => { $("#note-modal").classList.add("hidden"); document.body.classList.remove("modal-open"); });
+$("#close-note").addEventListener("click", () => { $("#source-video").pause(); $("#note-modal").classList.add("hidden"); document.body.classList.remove("modal-open"); });
 $("#note-modal").addEventListener("click", event => { if (event.target.id === "note-modal") $("#close-note").click(); });
 $("#save-draft").addEventListener("click", () => saveNote(false));
 $("#save-final").addEventListener("click", () => saveNote(true));
