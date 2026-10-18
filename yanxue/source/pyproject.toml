@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "course-notes"
+version = "0.1.0"
+description = "从课程录播、课件和转录稿自动生成可追溯的 Markdown 笔记"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+documents = ["PyMuPDF>=1.24", "python-pptx>=1.0"]
+dev = ["pytest>=8"]
+recorder = ["flask>=3.0", "flask-cors>=4.0", "playwright>=1.40", "requests>=2.31"]
+
+[project.scripts]
+course-notes = "course_notes.cli:main"
+
+[tool.setuptools]
+packages = ["course_notes"]
+
+[tool.setuptools.package-data]
+course_notes = ["web/*.html", "web/*.css", "web/*.js"]
+

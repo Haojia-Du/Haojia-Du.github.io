@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>燕学 · 北京大学学习工作台</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand"><div class="brand-mark">燕学</div><div><strong>燕学工作台</strong><span>PKU STUDY DESK</span></div></div>
+      <nav>
+        <button class="nav-item active" data-scroll="campus"><span>◎</span> 一键学习</button>
+        <button class="nav-item" data-scroll="overview"><span>⌂</span> 总览</button>
+        <button class="nav-item" data-scroll="lectures"><span>▤</span> 笔记书架</button>
+        <button class="nav-item" data-scroll="importer"><span>＋</span> 其他材料</button>
+        <button class="nav-item" data-scroll="activity"><span>›_</span> 运行记录</button>
+      </nav>
+      <div class="sidebar-foot"><div class="tiny-label">当前课程</div><div id="side-course" class="side-course">正在读取…</div><button class="ghost full" id="open-course">打开工作目录</button></div>
+    </aside>
+
+    <main>
+      <header>
+        <div><div class="eyebrow">PEKING UNIVERSITY · LOCAL FIRST</div><h1>燕学工作台</h1><p id="subtitle">从教学网录播到可复习笔记，全程停留在这一个页面。</p></div>
+        <div class="header-actions"><button class="ghost" id="refresh">刷新状态</button><button class="primary" id="toggle-watch"><span class="pulse"></span><span>开启自动处理</span></button></div>
+      </header>
+
+      <section id="campus" class="section campus-panel">
+        <div class="campus-head"><div><span class="eyebrow light">ONE-CLICK LECTURE</span><h2>选择一节课，剩下的交给工作台。</h2><p>连接教学网后，录播下载、课件汇集、语音转录、笔记生成和质量检查会依次自动完成。</p></div><div id="recorder-chip" class="connection-chip"><span></span><b>正在检查</b></div></div>
+        <div id="recorder-start" class="campus-gate"><div><b>教学网连接尚未启动</b><small>后台只在本机运行，不会额外打开下载器窗口。</small></div><button class="gold" id="start-recorder">启动连接</button></div>
+        <form id="login-form" class="login-grid hidden" autocomplete="on">
+          <label>学号<input id="pku-username" autocomplete="username" inputmode="numeric" placeholder="请输入学号"></label>
+          <label>IAAA 密码<input id="pku-password" type="password" autocomplete="current-password" placeholder="仅用于本次本机登录"></label>
+          <label>学期<input id="pku-semester" placeholder="留空使用当前学期"></label>
+          <button class="gold login-button" type="submit">登录并读取课程</button>
+          <p class="privacy-note">密码只转发给本机 127.0.0.1 的教学网下载后台，不写入配置、笔记或运行日志。</p>
+        </form>
+        <div id="one-click-form" class="one-click-grid hidden">
+          <label>课程<select id="course-select"><option value="">选择课程</option></select></label>
+          <label>录播<select id="recording-select" disabled><option value="">先选择课程</option></select></label>
+          <label>笔记类型<select id="profile-select"><option value="economics">经济学</option><option value="stem">理工科</option><option value="humanities">人文社科</option><option value="law">法学</option><option value="language">语言课程</option><option value="general">通用课程</option></select></label>
+          <label class="check-row"><input id="include-files" type="checkbox" checked><span>同时获取课程课件与附件</span></label>
+          <button class="gold one-click-button" id="run-one-click" type="button">一键生成学习资料</button>
+          <button class="text-button" id="reload-courses" type="button">重新读取课程</button>
+        </div>
+        <div class="stage-track" id="stage-track" aria-label="处理进度"><div data-stage="collecting"><span>1</span><b>汇集课件</b></div><i></i><div data-stage="downloading"><span>2</span><b>下载录播</b></div><i></i><div data-stage="generating"><span>3</span><b>转录与成稿</b></div><i></i><div data-stage="done"><span>4</span><b>质检完成</b></div></div>
+      </section>
+
+      <section id="overview" class="section">
+        <div class="status-grid">
+          <article class="status-card"><div class="status-icon api">AI</div><div><span class="card-label">生成服务</span><strong id="api-status">检查中</strong><small id="api-detail">读取环境变量</small></div><button class="mini" id="check-key">联网验证</button></article>
+          <article class="status-card"><div class="status-icon downloader">↓</div><div><span class="card-label">教学网连接</span><strong id="downloader-status">检查中</strong><small id="downloader-detail">PKU-Recorder</small></div></article>
+          <article class="status-card"><div class="status-icon source">◇</div><div><span class="card-label">已发现材料</span><strong id="material-count">0</strong><small>下载目录中的匹配文件</small></div></article>
+          <article class="status-card"><div class="status-icon notes">N</div><div><span class="card-label">课程单元</span><strong id="lecture-count">0</strong><small id="lecture-summary">等待处理</small></div></article>
+        </div>
+        <div class="hero-panel"><div class="hero-copy"><span class="badge">已有本地材料时</span><h2>不登录教学网，也能继续。</h2><p>工作台会识别下载目录或手动导入的录播、课件和转录稿，保留原始证据并避免重复处理。</p><div class="hero-actions"><button class="primary" id="sync-online">同步并生成笔记</button><button class="ghost" id="sync-offline">只提取证据</button></div></div><div class="pipeline" aria-label="自动化流程"><div class="pipe-node done"><span>01</span><b>发现材料</b><small>录播 · 课件 · 转录稿</small></div><div class="pipe-line"></div><div class="pipe-node"><span>02</span><b>提取与转录</b><small>时间戳 · 页面 · 术语</small></div><div class="pipe-line"></div><div class="pipe-node"><span>03</span><b>笔记与质检</b><small>Markdown · QA 报告</small></div></div></div>
+      </section>
+
+      <section id="lectures" class="section"><div class="section-head"><div><span class="eyebrow">NOTEBOOK</span><h2>笔记书架</h2></div></div><div class="table-wrap"><table><thead><tr><th>课程单元</th><th>材料</th><th>状态</th><th>最近更新</th><th class="actions-col">操作</th></tr></thead><tbody id="lecture-body"><tr><td colspan="5" class="empty">正在读取课程材料…</td></tr></tbody></table></div></section>
+
+      <section id="importer" class="section two-column">
+        <article class="panel import-panel"><div class="section-head compact"><div><span class="eyebrow">ANY COURSE</span><h2>导入其他材料</h2></div></div><p>也适用于网课、讲座、访谈和非理科课程。大文件只建立引用，不重复复制。</p><label>课程单元名称<input id="import-title" placeholder="例如：第二讲，古典主义与浪漫主义"></label><label>已选择文件<textarea id="import-paths" rows="4" placeholder="选择视频、音频、课件、文档或已有转录稿" readonly></textarea></label><div class="row-actions"><button class="ghost" id="pick-files">选择文件</button><button class="primary" id="import-files">导入材料</button></div></article>
+        <article class="panel settings-panel"><div class="section-head compact"><div><span class="eyebrow">CURRENT PROFILE</span><h2>当前工作区</h2></div></div><dl><div><dt>课程</dt><dd id="config-title">—</dd></div><div><dt>笔记类型</dt><dd id="config-profile">—</dd></div><div><dt>生成策略</dt><dd>分段生成＋独立审计</dd></div><div><dt>数据位置</dt><dd id="config-path" class="path">—</dd></div></dl><div class="notice">课程文件、账号连接和生成结果均保留在本机。API Key 只从系统环境变量读取。</div></article>
+      </section>
+
+      <section id="activity" class="section"><div class="section-head"><div><span class="eyebrow">ACTIVITY</span><h2>运行记录</h2></div><div id="job-chip" class="job-chip idle"><span></span>空闲</div></div><div class="terminal" id="terminal"><div class="log muted">等待操作…</div></div></section>
+    </main>
+  </div>
+  <div id="note-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="note-title"><div class="modal-card"><div class="modal-head"><div><span id="note-kind" class="eyebrow">MARKDOWN NOTE</span><h2 id="note-title">课程笔记</h2></div><button id="close-note" class="icon-button" aria-label="关闭">×</button></div><textarea id="note-editor" spellcheck="false"></textarea><div class="modal-actions"><span id="note-path"></span><button class="ghost" id="save-draft">保存修改</button><button class="primary" id="save-final">保存为定稿</button></div></div></div>
+  <div id="toast" class="toast"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

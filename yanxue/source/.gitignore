@@ -1,0 +1,30 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+.venv/
+.env
+.env.*
+!.env.example
+
+# 个人课程、转录、笔记和本机配置不进入发布仓库
+workspaces/
+downloads/
+*.log
+local-settings.json
+
+# 大型媒体、音频切片与页面渲染缓存
+workspaces/**/source/*.mp4
+workspaces/**/source/*.m4a
+workspaces/**/source/*.mp3
+workspaces/**/source/*.wav
+workspaces/**/extracted/*_audio/
+workspaces/**/extracted/slide_images/
+
+# 可重建状态与生成结果
+workspaces/**/.course-notes-state.json
+workspaces/**/.downloader-sync.json
+workspaces/**/generated/sections/
+
