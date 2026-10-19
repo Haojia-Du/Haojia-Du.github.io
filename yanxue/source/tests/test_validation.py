@@ -75,7 +75,7 @@ class ValidationTests(unittest.TestCase):
             cache = next((self.lecture / "generated" / "sections").glob("*.json"))
             cache.write_text("{}", encoding="utf-8")
             pipeline.build(self.lecture)
-            self.assertEqual(provider.structured_response.call_count, 4)
+            self.assertEqual(provider.structured_response.call_count, 3)  # Valid audit checkpoint is reused.
             self.assertIn("有据可查", draft.read_text(encoding="utf-8"))
 
     def test_audit_failure_has_stage_and_never_marks_success(self):

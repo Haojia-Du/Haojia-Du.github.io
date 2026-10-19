@@ -9,14 +9,17 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-from .core import init_course
+from .core import init_course, PipelineError
+from .version import VERSION
 from .webui import serve
 from .desktop import discover_tools
+from .settings import load_settings
+from .records import ERROR
 
 
 def prepare_workspace(project: Path, downloader: str = "") -> Path:
     settings_path = project / "local-settings.json"
-    settings = json.loads(settings_path.read_text(encoding="utf-8")) if settings_path.exists() else {}
+    settings = load_settings(project / "workspaces" / "我的课程")
     downloader = downloader or os.environ.get("PKU_RECORDER_ROOT", "") or settings.get("downloader_root", "")
     existing = project / "workspaces" / "中级宏观经济学"
     workspace = existing if (existing / "course.toml").exists() else project / "workspaces" / "我的课程"
@@ -29,7 +32,8 @@ def prepare_workspace(project: Path, downloader: str = "") -> Path:
             downloader = str(Path(downloader).parent)
         init_course(workspace, "我的课程", "general", downloader)
         settings["downloader_root"] = downloader
-        settings_path.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
+        if not settings.get(ERROR):
+            settings_path.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
     return workspace
 
 
@@ -48,6 +52,8 @@ def main() -> None:
         with urllib.request.urlopen(url + "/api/status", timeout=2) as response:
             status = json.load(response)
         if status.get("ok") and "recorder" in status:
+            if status.get("version") != VERSION:
+                raise PipelineError("此端口仍在运行旧版燕学。请先结束旧版任务并关闭旧程序，再启动新版；不会自动中断已有任务。")
             if not args.no_browser:
                 webbrowser.open(url)
             return

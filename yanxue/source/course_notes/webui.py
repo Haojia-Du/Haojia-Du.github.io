@@ -42,6 +42,8 @@ from .batch import batch_status, prepare_batch, run_batch, edit_batch
 from .safety import request_limit, sample_lesson
 from .desktop import diagnostics, install_browser, install_ffmpeg, check_update
 from .version import VERSION
+from .records import read_record, backup_record, ERROR
+from .diagnostics import failure_info, diagnostic_report
 
 
 WEB_ROOT = Path(__file__).with_name("web")
@@ -78,8 +80,14 @@ class BackgroundRunner:
         self.finished_at: float | None = None
         self.task_path = task_path
         self.task: dict[str, Any] = {}
+        self.corrupt_source = False
         if task_path and task_path.exists():
-            self.task = json.loads(task_path.read_text(encoding="utf-8"))
+            self.task = read_record(task_path)
+            if self.task.get(ERROR) or not isinstance(self.task.get("args", {}), dict) or any(not isinstance(self.task.get(key, ""), str) for key in ["kind", "action", "error", "state", "course"]):
+                self.task = {}
+                self.corrupt_source = True
+                self.error = "任务恢复记录损坏，原文件保留；请从课程单元重新启动任务。"
+                return
             self.action = self.task.get("action", "")
             self.error = self.task.get("error", "")
             if self.task.get("state") == "running":
@@ -88,6 +96,9 @@ class BackgroundRunner:
     def _persist(self, state: str) -> None:
         self.task.update(state=state, action=self.action, error=self.error)
         if self.task_path:
+            if self.corrupt_source:
+                backup_record(self.task_path)
+                self.corrupt_source = False
             write_json(self.task_path, self.task)
 
     def start(self, action: str, function: Callable[[], Any], task: dict | None = None) -> None:
@@ -99,7 +110,12 @@ class BackgroundRunner:
             self.error = ""
             self.finished_at = None
             self.task = task or {}
-            self._persist("running")
+            try:
+                self._persist("running")
+            except OSError:
+                self.running = False
+                self.error = "无法保存任务记录，请检查磁盘空间与写入权限后重试。"
+                raise PipelineError(self.error) from None
 
         def target() -> None:
             self.events.add(f"开始：{action}")
@@ -117,7 +133,11 @@ class BackgroundRunner:
                 with self._lock:
                     self.running = False
                     self.finished_at = time.time()
-                    self._persist("failed" if self.error else "done")
+                    try:
+                        self._persist("failed" if self.error else "done")
+                    except OSError:
+                        self.error = "处理已结束但任务记录无法保存，请检查磁盘空间与写入权限；请勿删除已有输出。"
+                        self.events.add(self.error, "error")
 
         threading.Thread(target=target, name=f"course-notes-{action}", daemon=True).start()
 
@@ -127,6 +147,7 @@ class BackgroundRunner:
                 "running": self.running,
                 "action": self.action,
                 "error": self.error,
+                "failure": failure_info(self.error) if self.error else None,
                 "finished_at": self.finished_at,
                 "can_retry": bool(self.error and self.task.get("kind")),
             }
@@ -173,7 +194,14 @@ class WatchController:
                     self._stop.wait(self.app.watch_interval)
             self.app.events.add("自动监听已停止。")
 
-        self._thread = threading.Thread(target=loop, name="course-notes-watch", daemon=True)
+        def guarded_loop():
+            try:
+                loop()
+            except Exception as exc:
+                self.error = str(exc)
+                self._stop.set()
+                self.app.events.add("自动监听无法继续：请检查磁盘、配置与权限。" + str(exc), "error")
+        self._thread = threading.Thread(target=guarded_loop, name="course-notes-watch", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
@@ -201,7 +229,11 @@ class WebApp:
 
     @property
     def config(self) -> dict[str, Any]:
-        return effective_config(self.course_dir, read_toml(self.config_path))
+        try:
+            return effective_config(self.course_dir, read_toml(self.config_path))
+        except (ValueError, OSError):
+            return {"course":{"title":self.course_dir.name, "profile":"general", "terms":[]}, "models":{}, "automation":{},
+                    "_api_key":"", "_settings_error":"course.toml 课程配置无法读取；已停止使用 AI 密钥，请恢复配置备份或切换其他课程。"}
 
     @property
     def course_title(self) -> str:
@@ -246,15 +278,11 @@ class WebApp:
             validation = {}
             validation_path = lecture / "generated" / "validation.json"
             if validation_path.exists():
-                try:
-                    validation = json.loads(validation_path.read_text(encoding="utf-8"))
-                except (ValueError, OSError):
+                validation = read_record(validation_path)
+                if validation.get(ERROR) or not isinstance(validation.get("status"), str) or not isinstance(validation.get("warnings", []), list):
                     validation = {"status": "failed", "stage": "结果检验", "error": "检验报告损坏，请重新生成。"}
             if state.exists():
-                try:
-                    state_data = json.loads(state.read_text(encoding="utf-8"))
-                except (json.JSONDecodeError, OSError):
-                    pass
+                state_data = read_record(state)
             if final.exists():
                 status = "final"
             elif draft.exists():
@@ -284,7 +312,7 @@ class WebApp:
         recorder = self.recorder_status()
         return {
             "version": VERSION,
-            "request_usage": json.loads((self.workspace_root.parent / "request-usage.json").read_text(encoding="utf-8")) if (self.workspace_root.parent / "request-usage.json").exists() else {},
+            "request_usage": read_record(self.workspace_root.parent / "request-usage.json"),
             "batch": batch_status(self),
             "course": {
                 "title": self.course_title,
@@ -292,6 +320,7 @@ class WebApp:
                 "path": str(self.course_dir),
             },
             "environment": {
+                "settings_error": self.config.get("_settings_error", ""),
                 "api_key_present": bool(self.config.get("_api_key")),
                 "api_key_status": self.api_validation,
                 "ffmpeg": bool(shutil.which("ffmpeg")),
@@ -568,7 +597,10 @@ class WebApp:
         result = []
         for path in sorted(self.workspace_root.iterdir()):
             if path.is_dir() and (path / "course.toml").is_file():
-                config = effective_config(path, read_toml(path / "course.toml"))
+                try:
+                    config = effective_config(path, read_toml(path / "course.toml"))
+                except (ValueError, OSError):
+                    config = {"course":{"title":path.name + "（配置需修复）"}}
                 result.append({"name": path.name, "title": config.get("course", {}).get("title", path.name), "active": path == self.course_dir})
         return result
 
@@ -664,6 +696,12 @@ class Handler(SimpleHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         return
 
+    def end_headers(self) -> None:
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "SAMEORIGIN")
+        self.send_header("Referrer-Policy", "no-referrer")
+        super().end_headers()
+
     def _json(self, data: Any, status: int = 200) -> None:
         payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
@@ -675,15 +713,30 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _body(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
-        if length > 1024 * 1024:
+        if length < 0 or length > 1024 * 1024:
             raise PipelineError("请求体过大。")
-        return json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+        value = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+        if not isinstance(value, dict):
+            raise PipelineError("请求内容应为 JSON 对象。")
+        return value
+
+    def _trusted_host(self) -> bool:
+        try:
+            return urlparse("http://" + self.headers.get("Host", "")).hostname in {"127.0.0.1", "localhost", "::1"}
+        except ValueError:
+            return False
 
     def do_GET(self) -> None:
+        if not self._trusted_host():
+            self._json({"ok": False, "error": "仅允许通过本机地址访问工作台。"}, HTTPStatus.FORBIDDEN)
+            return
         route = urlparse(self.path)
-        if route.path in {"/api/settings", "/api/materials", "/api/material", "/api/review", "/api/runtime", "/api/update", "/api/courses/local", "/api/course/options"}:
+        if route.path in {"/api/settings", "/api/materials", "/api/material", "/api/review", "/api/runtime", "/api/update", "/api/courses/local", "/api/course/options", "/api/diagnostics"}:
             try:
                 query = parse_qs(route.query)
+                if route.path == "/api/diagnostics":
+                    self._json({"ok": True, "report": diagnostic_report(self.app)})
+                    return
                 if route.path == "/api/runtime":
                     self._json({"ok": True, **diagnostics()})
                     return
@@ -785,6 +838,9 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         try:
+            if not self._trusted_host():
+                self._json({"ok": False, "error": "仅允许通过本机地址访问工作台。"}, HTTPStatus.FORBIDDEN)
+                return
             origin = self.headers.get("Origin")
             if origin and origin != "http://" + self.headers.get("Host", ""):
                 raise PipelineError("请在本机工作台页面执行此操作。")

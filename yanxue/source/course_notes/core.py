@@ -454,7 +454,8 @@ class CoursePipeline:
             write_json(report, {"status": "warning" if self.warnings else "passed", "stage": "完成", "warnings": self.warnings, "checked_at": time.time()})
             return output
         except Exception as exc:
-            write_json(report, {"status": "failed", "stage": self.stage, "error": str(exc), "warnings": self.warnings, "checked_at": time.time()})
+            from .diagnostics import failure_info
+            write_json(report, {"status": "failed", "stage": self.stage, "error": str(exc), "warnings": self.warnings, "checked_at": time.time(), **failure_info(exc)})
             raise
 
     def _build(self, lecture_dir: Path, *, offline: bool = False, force: bool = False) -> Path:
@@ -503,7 +504,7 @@ class CoursePipeline:
         config_digest = hashlib.sha256(json.dumps({k: v for k, v in self.config.items() if not k.startswith("_")}, sort_keys=True).encode()).hexdigest()
         prompt_path = self.course_dir / "prompt.md"
         config_digest += file_hash(prompt_path) if prompt_path.exists() else ""
-        signature = hashlib.sha256(json.dumps([manifest, config_digest, "validation-v1"], sort_keys=True).encode()).hexdigest()
+        signature = hashlib.sha256(json.dumps([manifest, config_digest, "validation-v2"], sort_keys=True).encode()).hexdigest()
         draft_path = generated_dir / "draft.md"
         if (
             not force
@@ -511,6 +512,7 @@ class CoursePipeline:
             and previous.get("offline") is offline
             and draft_path.exists()
             and previous.get("artifacts")
+            and isinstance(previous["artifacts"], dict)
             and all((generated_dir / name).is_file() and file_hash(generated_dir / name) == digest for name, digest in previous["artifacts"].items())
             and (extracted_dir / "evidence.json").is_file()
             and previous.get("evidence_sha256") == file_hash(extracted_dir / "evidence.json")
@@ -592,7 +594,8 @@ class CoursePipeline:
             section_dir.mkdir(parents=True, exist_ok=True)
             sections: list[dict[str, Any]] = []
             self.stage = "笔记分段生成"
-            for index, chunk in enumerate(make_chunks(evidence), 1):
+            evidence_groups = make_chunks(evidence)
+            for index, chunk in enumerate(evidence_groups, 1):
                 section_key = hashlib.sha256((evidence_as_text(chunk) + custom + profile_rule + model + BASE_INSTRUCTIONS + str(self.config.get("models", {}).get("base_url", ""))).encode()).hexdigest()[:20]
                 cache = section_dir / f"{index:03d}_{section_key}.json"
                 section = cached_result(cache, lambda value: validate_schema(value, NOTE_SCHEMA)) if not force else None
@@ -627,26 +630,21 @@ class CoursePipeline:
             body.append("本笔记由课程材料自动整理；存疑项与材料覆盖情况见同目录下的 `qa_report.md`。\n")
             atomic_write(draft_path, "\n".join(body))
 
-            complete_evidence = evidence_as_text(evidence)
-            qa_input = f"【原始证据】\n{complete_evidence[:50000]}\n\n【生成笔记】\n{draft_path.read_text(encoding='utf-8')[:50000]}"
             reviewer = self.config.get("models", {}).get("reviewer", model)
             self.stage = "语义质检"
-            qa = provider.structured_response(
-                model=reviewer,
-                instructions="你是课程笔记审计员。只做证据覆盖、无依据陈述、术语一致性和人工复核点检查；不要重写笔记。",
-                user_input=qa_input,
-                schema_name="course_note_audit",
-                schema=QA_SCHEMA,
-            )
+            from .audit import audit_sections
+            qa, coverage = audit_sections(provider, evidence_groups, sections, reviewer,
+                str(self.config.get("models", {}).get("base_url", "")), generated_dir / "audit-sections")
             validate_schema(qa, QA_SCHEMA)
-            if len(complete_evidence) > 50000 or len(draft_path.read_text(encoding="utf-8")) > 50000:
-                self.warnings.append("语义质检仅覆盖前50000字符，不代表全文已审计。")
+            write_json(generated_dir / "qa_coverage.json", coverage)
+            if any(check["parts"] > 1 for check in coverage["checks"]):
+                self.warnings.append("超长笔记采用分片审计，主题遗漏仍需人工核对。")
             if any(qa[key] for key in ["unsupported_claims", "missing_topics", "inconsistencies", "manual_checks"]):
                 self.warnings.append("语义质检发现需人工核对的内容，请查看质检报告。")
             write_json(generated_dir / "qa_report.json", qa)
             atomic_write(generated_dir / "qa_report.md", render_qa(qa))
 
-        artifacts = {name: file_hash(generated_dir / name) for name in ["draft.md", "qa_report.md"] + ([] if offline else ["qa_report.json"])}
+        artifacts = {name: file_hash(generated_dir / name) for name in ["draft.md", "qa_report.md"] + ([] if offline else ["qa_report.json", "qa_coverage.json"])}
         write_json(state_path, {"signature": signature, "manifest": manifest, "completed_at": time.time(), "offline": offline, "artifacts": artifacts, "warnings": self.warnings, "evidence_sha256": file_hash(extracted_dir / "evidence.json")})
         return draft_path
 

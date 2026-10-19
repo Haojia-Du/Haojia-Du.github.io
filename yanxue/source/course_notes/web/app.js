@@ -63,7 +63,7 @@ function renderLectures(lectures) {
     const check = item.validation || {};
     const labels = {failed:"检验失败", warning:"待人工核对", running:"尚未完成检验", passed:"结构检验通过"};
     const checkText = check.error || (check.warnings || []).join("；");
-    const checkHtml = check.status ? `<details><summary>${escapeHtml(labels[check.status] || "未检验")}</summary><p>${escapeHtml(check.stage || "")}：${escapeHtml(checkText || "未检出结构异常，不代表语义完全正确。")}</p></details>` : "";
+    const checkHtml = check.status ? `<details><summary>${escapeHtml(labels[check.status] || "未检验")}</summary><p>${escapeHtml(check.stage || "")}：${escapeHtml(checkText || "未检出结构异常，不代表语义完全正确。")}</p>${check.suggestion ? `<p>${escapeHtml(check.code)}：${escapeHtml(check.suggestion)}</p>` : ""}</details>` : "";
     const stateText = check.status === "failed" ? "处理未通过" : statusName(item.status);
     return `<tr><td>${escapeHtml(item.name)}</td><td>${item.sources} 个</td><td><span class="status-pill ${item.status}">${stateText}</span>${checkHtml}</td><td>${timeText(item.updated_at)}</td><td><div class="table-actions">${actions}</div></td></tr>`;
   }).join("");
@@ -152,7 +152,7 @@ function render(data) {
   watchButton.querySelector("span:last-child").textContent = watcher.running ? "停止自动处理" : "开启自动处理";
   watchButton.classList.toggle("watching", watcher.running);
   $("#task-error").classList.toggle("hidden", !job.error || job.running);
-  $("#task-error-message").textContent = job.error || "";
+    $("#task-error-message").textContent = (job.error || "") + (job.failure ? ` ${job.failure.code}：${job.failure.suggestion}` : "");
   $("#retry-task").classList.toggle("hidden", !job.can_retry);
   if (typeof updateStudyStatus === "function") updateStudyStatus(job);
   if (typeof updateOptionalFeatures === "function") updateOptionalFeatures(data);

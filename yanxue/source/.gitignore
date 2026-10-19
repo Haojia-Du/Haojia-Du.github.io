@@ -6,6 +6,7 @@ build/
 *.egg-info/
 .venv/
 .build-venv/
+*.corrupt-*.bak
 *.spec
 updates/
 .env

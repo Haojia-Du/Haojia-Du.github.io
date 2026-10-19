@@ -4,6 +4,18 @@ function taskRequestLimit() {
   return value;
 }
 
+$("#export-diagnostics").addEventListener("click", async () => {
+  try {
+    const data = await api("/api/diagnostics");
+    const url = URL.createObjectURL(new Blob([JSON.stringify(data.report, null, 2)], {type:"application/json"}));
+    const link = document.createElement("a");
+    link.href = url; link.download = "yanxue-diagnostics.json";
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    notify("脱敏诊断已下载到本机，未上传任何信息。");
+  } catch (error) { notify(error.message, true); }
+});
+
 function updateFirstRun(data) {
   const env = data.environment;
   $("#setup-progress").textContent = [
@@ -17,6 +29,8 @@ function updateFirstRun(data) {
   $("#run-sample").disabled = data.job.running || data.watcher.running;
   $("#pick-sample").disabled = data.job.running || data.watcher.running;
   if (data.watcher.error) $("#setup-progress").textContent += ` · 自动监听已停止：${data.watcher.error}`;
+  const errors = [env.settings_error, data.request_usage?._record_error, data.batch?.error && !data.batch.available ? data.batch.error : ""].filter(Boolean);
+  if (errors.length) $("#setup-progress").textContent += " · " + errors.join("；");
 }
 
 $("#pick-sample").addEventListener("click", async () => {

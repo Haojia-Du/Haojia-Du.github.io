@@ -24,6 +24,9 @@ def request_limit(path, limit, stop=None):
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 10000:
         raise PipelineError("AI 请求次数上限应为1～10000的整数。")
     guard = {"path": path, "limit": limit, "used": 0, "stop": stop}
+    from .records import read_record, backup_record, ERROR
+    if read_record(path).get(ERROR):
+        backup_record(path)
     write_json(path, {"limit": limit, "used": 0})
     token = _guard.set(guard)
     try:

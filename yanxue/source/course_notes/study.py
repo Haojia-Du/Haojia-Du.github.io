@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .core import CoursePipeline, OpenAIProvider, PipelineError, atomic_write, write_json
 from .validation import cached_result, validate_review
+from .records import read_record
 
 ITEM = {"type": "object", "properties": {name: {"type": "string"} for name in ("question", "answer", "source")},
         "required": ["question", "answer", "source"], "additionalProperties": False}
@@ -24,8 +25,10 @@ def generate_review(course: Path, lecture: Path) -> dict:
         note = lecture / "generated" / "draft.md"
     if not note.exists():
         raise PipelineError("请先生成或保存课程笔记，再生成复习包。")
+    if note.parent.name != "final" and read_record(lecture / "generated" / "validation.json").get("status") in {"failed", "running"}:
+        raise PipelineError("当前初稿尚未通过检验，请先续跑完成，或人工核对并保存定稿后再生成复习包。")
     state_path = lecture / ".course-notes-state.json"
-    if "final" not in note.parts and state_path.exists() and json.loads(state_path.read_text(encoding="utf-8")).get("offline"):
+    if note.parent.name != "final" and state_path.exists() and read_record(state_path).get("offline"):
         raise PipelineError("当前是离线证据包，请先正式生成笔记，或人工整理并保存为定稿。")
     text = note.read_text(encoding="utf-8")
     if not text.strip():
@@ -48,7 +51,7 @@ def generate_review(course: Path, lecture: Path) -> dict:
         all_cards.extend(data["cards"])
         outlines.append(data["outline"])
     result = {"quiz": all_quiz, "cards": all_cards, "outline": "\n\n".join(outlines),
-              "note_sha256": hashlib.sha256(text.encode()).hexdigest(), "note_kind": "final" if "final" in note.parts else "draft"}
+              "note_sha256": hashlib.sha256(text.encode()).hexdigest(), "note_kind": "final" if note.parent.name == "final" else "draft"}
     write_json(lecture / "generated" / "review.json", result)
     lines = ["# 课程复习包", "", "## 考前提纲", result["outline"], "", "## 自测题"]
     for index, item in enumerate(all_quiz, 1):

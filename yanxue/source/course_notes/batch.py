@@ -10,6 +10,7 @@ from .core import PipelineError, write_json
 from .materials import lecture_files
 from .study import generate_review
 from .workflow import recording_identity
+from .records import read_record, backup_record, ERROR
 
 
 def batch_path(app) -> Path:
@@ -20,7 +21,9 @@ def batch_status(app) -> dict:
     path = batch_path(app)
     if not path.exists():
         return {"available": False}
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = read_record(path)
+    if data.get(ERROR) or not isinstance(data.get("course"), dict) or not isinstance(data.get("items"), list) or not isinstance(data.get("id"), str) or any(not isinstance(item, dict) or any(key not in item for key in ["state", "name", "index"]) or not isinstance(item.get("index"), int) for item in data.get("items", [])):
+        return {"available": False, "error": "批次记录损坏，原文件保留。可重新选择录播创建批次，旧记录会先备份。"}
     if data.get("state") == "running" and not app.runner.running:
         data["state"] = "paused"
     return {"available": True, **data}
@@ -34,6 +37,8 @@ def prepare_batch(app, course: dict, indices: list[int], profile: str, include_f
         raise PipelineError("课程录播列表发生变化，请刷新后选择。")
     app._activate_course(course["name"], profile)
     existing = batch_status(app)
+    if existing.get("error") and not existing.get("available"):
+        backup_record(batch_path(app))
     if existing.get("available") and existing.get("state") not in {"done", "canceled"}:
         raise PipelineError("这门课已有未完成批次，请先继续该批次。")
     snapshot = {"course_id": str(course["course_id"]), "name": course["name"], "recordings": [
