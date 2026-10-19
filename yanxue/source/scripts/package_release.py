@@ -29,8 +29,8 @@ def main() -> None:
             if entry["path"].endswith(".cmd"):
                 content = content.replace("\r\n", "\n").replace("\n", "\r\n")
             bundle.writestr("yanxue/" + entry["path"], base64.b64decode(content) if entry.get("encoding") == "base64" else content.encode("utf-8"))
-    manifest = {"version": "0.3.0", "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(), "files": len(entries),
-                "optional_windows_release": "https://github.com/Haojia-Du/Haojia-Du.github.io/releases/tag/yanxue-v0.3.0"}
+    manifest = {"version": "0.4.0", "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(), "files": len(entries),
+                "optional_windows_release": "https://github.com/Haojia-Du/Haojia-Du.github.io/releases/tag/yanxue-v0.4.0"}
     (output / "release-manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     (output / "source-files.json").write_text(json.dumps(entries, ensure_ascii=False), encoding="utf-8")
     print(json.dumps({"archive": str(archive), "bytes": archive.stat().st_size, **manifest}, ensure_ascii=False))

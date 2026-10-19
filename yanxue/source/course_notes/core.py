@@ -217,6 +217,8 @@ class OpenAIProvider:
 
     def _open(self, request: urllib.request.Request, timeout: int):
         for attempt in range(3):
+            from .safety import before_request
+            before_request()
             try:
                 return urllib.request.urlopen(request, timeout=timeout)
             except urllib.error.HTTPError as exc:

@@ -36,14 +36,21 @@ function updateOptionalFeatures(data) {
   const batch = data.batch || {available:false};
   $("#batch-progress").classList.toggle("hidden", !batch.available);
   if (batch.available) {
-    const states = {queued:"等待开始", running:"处理中", paused:"已暂停", error:"需要重试", done:"已完成", pending:"等待处理", notes_done:"笔记已完成"};
+    const states = {queued:"等待开始", running:"处理中", paused:"已暂停", error:"需要重试", done:"已完成", canceled:"已取消", skipped:"已跳过", pending:"等待处理", notes_done:"笔记已完成"};
     const count = batch.items.filter(item => item.state === "done").length;
     $("#batch-progress-title").textContent = `${batch.course.name} · ${states[batch.state] || batch.state}`;
     $("#batch-progress-summary").textContent = `${count} / ${batch.items.length} 节完成${batch.generate_review ? " · 含复习包" : ""}`;
     $("#batch-progress-items").innerHTML = batch.items.map(item => `<div class="batch-item"><span>${escapeHtml(item.name)}<small>${escapeHtml(item.time || "")}</small></span><b>${states[item.state] || item.state}</b>${item.error ? `<p>${escapeHtml(item.error)}</p>` : ""}</div>`).join("");
     const runningBatch = data.job.running && data.job.action.includes("批量");
     $("#pause-batch").classList.toggle("hidden", !runningBatch);
-    $("#resume-batch").classList.toggle("hidden", batch.state === "done" || data.job.running);
+    $("#resume-batch").classList.toggle("hidden", ["done", "canceled"].includes(batch.state) || data.job.running);
+    if (!$("#cancel-batch")) {
+      $("#resume-batch").insertAdjacentHTML("afterend", '<button id="cancel-batch" class="ghost">取消批次</button><button id="skip-batch" class="ghost">跳过失败节次</button>');
+      $("#cancel-batch").addEventListener("click", () => { if (confirm("取消后保留所有已完成内容。正在处理的当前节会先完成，是否继续？")) post("/api/batch/cancel", {}, "已请求取消，已完成内容保留"); });
+      $("#skip-batch").addEventListener("click", () => post("/api/batch/skip", {}, "已跳过失败节次，请点击继续批次"));
+    }
+    $("#cancel-batch").classList.toggle("hidden", ["done", "canceled"].includes(batch.state));
+    $("#skip-batch").classList.toggle("hidden", data.job.running || batch.state !== "error");
   }
   $$("#course-options-form button, #install-browser, #install-ffmpeg").forEach(button => button.disabled = data.job.running || data.watcher.running);
   if (runtimeInstallRunning && !data.job.running) { runtimeInstallRunning = false; loadRuntime(); }

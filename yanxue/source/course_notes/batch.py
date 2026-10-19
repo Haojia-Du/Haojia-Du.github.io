@@ -34,7 +34,7 @@ def prepare_batch(app, course: dict, indices: list[int], profile: str, include_f
         raise PipelineError("课程录播列表发生变化，请刷新后选择。")
     app._activate_course(course["name"], profile)
     existing = batch_status(app)
-    if existing.get("available") and existing.get("state") not in {"done"}:
+    if existing.get("available") and existing.get("state") not in {"done", "canceled"}:
         raise PipelineError("这门课已有未完成批次，请先继续该批次。")
     snapshot = {"course_id": str(course["course_id"]), "name": course["name"], "recordings": [
         {key: recordings[i].get(key, "") for key in ("name", "time", "teacher")} for i in indices]}
@@ -56,10 +56,10 @@ def run_batch(app, identifier: str) -> str:
     data.update(state="running", error="")
     write_json(path, data)
     for item in data["items"]:
-        if item["state"] == "done":
+        if item["state"] in {"done", "skipped"}:
             continue
         if app.batch_pause.is_set():
-            data["state"] = "paused"
+            data["state"] = "canceled" if app.batch_cancel.is_set() else "paused"
             write_json(path, data)
             return "批量任务已暂停，当前已完成的课程单元会保留"
         item.update(state="running", error="")
@@ -88,7 +88,32 @@ def run_batch(app, identifier: str) -> str:
             data.update(state="error", error=str(exc))
             write_json(path, data)
             raise
-    data.update(state="done", completed_at=time.time())
+    data.update(state="canceled" if app.batch_cancel.is_set() else "done", completed_at=time.time())
     write_json(path, data)
     app.one_click_stage = "done"
     return f"整门课批次已完成：{len(data['items'])} 节"
+
+
+def edit_batch(app, action):
+    if app.runner.running:
+        if action != "cancel" or app.runner.task.get("kind") != "batch":
+            raise PipelineError("请等待当前节结束后再跳过。")
+        app.batch_cancel.set()
+        app.batch_pause.set()
+        return
+    path = batch_path(app)
+    data = batch_status(app)
+    if not data.get("available") or data.get("state") in {"done", "canceled"}:
+        raise PipelineError("没有可修改的未完成批次。")
+    data.pop("available", None)
+    if action == "cancel":
+        data["state"] = "canceled"
+    else:
+        failed = next((item for item in data["items"] if item["state"] == "error"), None)
+        if failed is None:
+            raise PipelineError("没有可跳过的失败节次。")
+        if failed["index"] == 0 and data["include_files"] and not data.get("shared_files"):
+            raise PipelineError("首节课件尚未获取，跳过会丢失后续共用材料，请先重试或取消并新建批次。")
+        failed["state"] = "skipped"
+        data.update(state="paused", error="")
+    write_json(path, data)

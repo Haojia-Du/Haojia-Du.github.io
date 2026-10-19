@@ -29,6 +29,24 @@
       </header>
       <div id="task-error" class="section error-banner hidden"><div><b>处理未完成</b><p id="task-error-message"></p></div><button id="retry-task" class="primary">从断点重试</button></div>
 
+      <section id="getting-started" class="section panel">
+        <h2>第一次使用，从这里开始</h2>
+        <p id="setup-progress" aria-live="polite">正在检查本机状态…</p>
+        <div class="row-actions"><a href="#connections">① 配置下载器与 AI</a><a href="#campus">② 登录并选择课程</a><a href="#sample-panel">③ 先试跑，再处理整节</a></div>
+        <p>首次需联网安装必要组件。只有点击生成后才发送课程材料；请先确认课程材料允许使用所选 AI 服务。</p>
+        <details id="sample-panel"><summary>前3分钟试跑与用量保护</summary>
+          <p>先从现有下载器取得一段本地音视频。试跑只截取前3分钟，生成独立笔记，不修改原文件，也不自动启动整节处理。</p>
+          <label>本地音视频完整路径<input id="sample-source" placeholder="粘贴已下载视频的完整路径"></label>
+          <label class="check-row"><input id="sample-consent" type="checkbox">我同意把样本音频及转录文本发送给已配置的 AI 服务，可能产生费用。</label>
+          <button id="run-sample" class="primary">试跑前3分钟</button>
+          <hr>
+          <label>每次任务 AI 请求次数上限（重试也计数）<input id="request-limit" type="number" min="1" max="10000" value="100"></label>
+          <p>上限适用于从本页发起的一键处理、批次和试跑；其他手动生成默认100次。自动监听不受此上限保护。恢复任务会重新分配额度；已完成内容会复用。</p>
+          <div class="settings-grid"><label>预计音频总分钟<input id="estimate-minutes" type="number" min="0"></label><label>转录单价／分钟<input id="estimate-rate" type="number" min="0" step="any"></label><label>笔记、审计等预计费用<input id="estimate-extra" type="number" min="0" step="any"></label></div>
+          <p id="cost-estimate">单价由你使用的服务决定；币种需统一。费用估算不是账单，也不是金额硬上限。</p>
+          <p id="request-usage" aria-live="polite"></p>
+        </details>
+      </section>
       <section id="campus" class="section campus-panel">
         <div class="campus-head"><div><span class="eyebrow light">ONE-CLICK LECTURE</span><h2>选择一节课，剩下的交给工作台。</h2><p>连接教学网后，录播下载、课件汇集、语音转录、笔记生成和质量检查会依次自动完成。</p></div><div id="recorder-chip" class="connection-chip"><span></span><b>正在检查</b></div></div>
         <div id="recorder-start" class="campus-gate"><div><b>教学网连接尚未启动</b><small>后台只在本机运行，不会额外打开下载器窗口。</small></div><button class="gold" id="start-recorder">启动连接</button></div>
@@ -113,5 +131,6 @@
   <script src="/app.js"></script>
   <script src="/study-desk.js"></script>
   <script src="/optional-features.js"></script>
+  <script src="/first-run.js"></script>
 </body>
 </html>

@@ -38,7 +38,8 @@ from .settings import effective_config, load_settings, save_settings, settings_p
 from .materials import material_data, file_at
 from .study import generate_review
 from .workflow import run_recording
-from .batch import batch_status, prepare_batch, run_batch
+from .batch import batch_status, prepare_batch, run_batch, edit_batch
+from .safety import request_limit, sample_lesson
 from .desktop import diagnostics, install_browser, install_ffmpeg, check_update
 from .version import VERSION
 
@@ -190,6 +191,7 @@ class WebApp:
         self.one_click_stage = "idle"
         self.workspace_root = self.course_dir.parent
         self.batch_pause = threading.Event()
+        self.batch_cancel = threading.Event()
         self._recorder_cache: tuple[float, dict[str, Any]] = (0.0, {"running": False})
         self.events.add("可视化工作台已启动。", "success")
 
@@ -270,6 +272,7 @@ class WebApp:
         recorder = self.recorder_status()
         return {
             "version": VERSION,
+            "request_usage": json.loads((self.workspace_root.parent / "request-usage.json").read_text(encoding="utf-8")) if (self.workspace_root.parent / "request-usage.json").exists() else {},
             "batch": batch_status(self),
             "course": {
                 "title": self.course_title,
@@ -337,6 +340,9 @@ class WebApp:
             raise PipelineError("已有任务正在执行，请等待完成。")
         if self.watcher.running:
             raise PipelineError("请先停止自动监听，再执行手动任务。")
+        requested_limit = int(args.get("request_limit", 100))
+        if not 1 <= requested_limit <= 10000:
+            raise PipelineError("AI 请求次数上限应在 1～10000 之间。")
         if retry:
             task = self.runner.task
             kind, args = task.get("kind", ""), task.get("args", {})
@@ -351,7 +357,9 @@ class WebApp:
                     raise PipelineError("请先读取教学网课程。")
                 args = prepare_batch(self, selected, [int(i) for i in args.get("indices", [])], str(args.get("profile", "general")),
                                      bool(args.get("include_files", True)), bool(args.get("generate_review", False)))
+                args["request_limit"] = requested_limit
             self.batch_pause.clear()
+            self.batch_cancel.clear()
             function = lambda: run_batch(self, str(args["batch_id"]))
         elif kind == "one-click":
             if not retry:
@@ -371,6 +379,10 @@ class WebApp:
             function = lambda: self.sync(bool(args.get("offline")))
         elif kind == "review":
             function = lambda: (generate_review(self.course_dir, self._lecture_path(str(args["lecture"]))), "复习包已生成")[1]
+        elif kind == "sample":
+            import uuid
+            args.setdefault("sample_id", uuid.uuid4().hex[:12])
+            function = lambda: sample_lesson(self, str(args.get("source", "")), args["sample_id"])
         elif kind == "browser-install":
             function = install_browser
         elif kind == "ffmpeg-install":
@@ -378,7 +390,16 @@ class WebApp:
         else:
             raise PipelineError("没有可重试任务，请从课程单元重新启动。")
         labels = {"one-click": "一键完成录播学习资料", "build": "生成课程笔记", "sync": "同步并整理材料", "review": "生成复习包", "batch": "批量整理整门课", "browser-install": "安装浏览器组件", "ffmpeg-install": "安装 FFmpeg 组件"}
-        self.runner.start(labels[kind], function, {"kind": kind, "args": args, "course": str(self.course_dir)})
+        labels["sample"] = "前3分钟小样本试跑"
+        limit = int(args.get("request_limit", 100))
+        if not 1 <= limit <= 10000:
+            raise PipelineError("AI 请求次数上限应在 1～10000 之间。")
+        args["request_limit"] = limit
+        task_function = function
+        def guarded():
+            with request_limit(self.workspace_root.parent / "request-usage.json", limit):
+                return task_function()
+        self.runner.start(labels[kind], guarded, {"kind": kind, "args": args, "course": str(self.course_dir)})
 
     def settings_data(self) -> dict[str, Any]:
         config = self.config
@@ -754,11 +775,19 @@ class Handler(SimpleHTTPRequestHandler):
                 self.app.schedule("batch", body)
             elif path == "/api/batch/pause":
                 self.app.batch_pause.set()
+            elif path == "/api/batch/cancel":
+                edit_batch(self.app, "cancel")
+            elif path == "/api/batch/skip":
+                edit_batch(self.app, "skip")
+            elif path == "/api/sample":
+                if not body.get("confirmed"):
+                    raise PipelineError("试跑会向配置的 AI 服务发送前3分钟音频，请先确认。")
+                self.app.schedule("sample", body)
             elif path == "/api/batch/resume":
                 status = batch_status(self.app)
-                if not status.get("available") or status.get("state") == "done":
+                if not status.get("available") or status.get("state") in {"done", "canceled"}:
                     raise PipelineError("没有需要继续的批次。")
-                self.app.schedule("batch", {"batch_id": status["id"]})
+                self.app.schedule("batch", {"batch_id": status["id"], "request_limit": body.get("request_limit", 100)})
             elif path == "/api/course/select":
                 self.app.select_course(str(body.get("name", "")))
             elif path == "/api/course/options":
@@ -829,7 +858,7 @@ class Handler(SimpleHTTPRequestHandler):
                 recording_index = int(body.get("recording_index", -1))
                 include_files = bool(body.get("include_files", True))
                 profile = str(body.get("profile", "general"))
-                self.app.schedule("one-click", {"course_id": course_id, "recording_index": recording_index, "include_files": include_files, "profile": profile})
+                self.app.schedule("one-click", {"course_id": course_id, "recording_index": recording_index, "include_files": include_files, "profile": profile, "request_limit": body.get("request_limit", 100)})
             elif path == "/api/note/save":
                 lecture = str(body.get("lecture", ""))
                 content = str(body.get("content", ""))

@@ -150,6 +150,7 @@ function render(data) {
   $("#retry-task").classList.toggle("hidden", !job.can_retry);
   if (typeof updateStudyStatus === "function") updateStudyStatus(job);
   if (typeof updateOptionalFeatures === "function") updateOptionalFeatures(data);
+    if (typeof updateFirstRun === "function") updateFirstRun(data);
 }
 
 async function refresh() {
@@ -176,6 +177,9 @@ async function pollEvents() {
 
 async function post(path, body = {}, message = "任务已提交") {
   try {
+      if (["/api/one-click", "/api/batch/start", "/api/batch/resume", "/api/sample"].includes(path) && typeof taskRequestLimit === "function") body.request_limit = taskRequestLimit();
+      if (["/api/one-click", "/api/batch/start", "/api/batch/resume"].includes(path) && !confirm(`将向配置的 AI 服务发送课程音频和提取内容，可能产生费用。本次请求上限 ${body.request_limit || 100} 次，不是金额上限。确认开始？`)) return null;
+      if (path === "/api/retry" && !confirm("重试会按原任务的请求上限重新分配额度，已完成内容会复用，可能继续产生费用。确认继续？")) return null;
     const data = await api(path, { method: "POST", body });
     notify(message);
     await refresh();
