@@ -56,6 +56,7 @@ def run_recording(app, course_id: str, recording_index: int, include_files: bool
                     app._recorder_api("/api/retry/" + quote(str(job["id"]), safe=""), method="POST", payload={})
         app.one_click_stage = "downloading"
         last = ""
+        last_progress = time.monotonic()
         for _ in range(2700):
             status = app._recorder_api("/api/bridge/status", timeout=10)
             tracked = [j for j in status.get("jobs", []) if str(j.get("id")) in tracked_ids]
@@ -65,10 +66,13 @@ def run_recording(app, course_id: str, recording_index: int, include_files: bool
             if summary != last:
                 app.events.add("下载进度：" + summary)
                 last = summary
+                last_progress = time.monotonic()
             if all(j.get("status") == "done" for j in tracked):
                 break
             if any(j.get("status") in {"failed", "canceled"} for j in tracked):
                 raise PipelineError("部分下载未完成，点击重试会仅重启失败任务。")
+            if time.monotonic() - last_progress > 900:
+                raise PipelineError("下载进度已15分钟未变化，可能卡住；请检查网络和下载器后重试，原任务会保留，不重新创建下载。")
             time.sleep(4)
         else:
             raise PipelineError("下载等待超时，任务已保留，可稍后重试。")

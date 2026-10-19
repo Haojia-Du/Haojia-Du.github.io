@@ -243,6 +243,13 @@ class WebApp:
             final = lecture / "final" / "notes.md"
             state = lecture / ".course-notes-state.json"
             state_data: dict[str, Any] = {}
+            validation = {}
+            validation_path = lecture / "generated" / "validation.json"
+            if validation_path.exists():
+                try:
+                    validation = json.loads(validation_path.read_text(encoding="utf-8"))
+                except (ValueError, OSError):
+                    validation = {"status": "failed", "stage": "结果检验", "error": "检验报告损坏，请重新生成。"}
             if state.exists():
                 try:
                     state_data = json.loads(state.read_text(encoding="utf-8"))
@@ -256,6 +263,7 @@ class WebApp:
                 status = "pending"
             result.append({
                 "name": lecture.name,
+                "validation": validation,
                 "sources": len(local_files) + len(refs),
                 "status": status,
                 "has_draft": draft.exists(),
@@ -319,6 +327,11 @@ class WebApp:
         source = path / "generated" / "draft.md"
         if not source.exists():
             raise PipelineError("该课程尚无初稿。")
+        if not source.read_text(encoding="utf-8").strip():
+            raise PipelineError("初稿为空，不能定稿，请重新生成。")
+        report = path / "generated" / "validation.json"
+        if report.exists() and json.loads(report.read_text(encoding="utf-8")).get("status") in {"failed", "running"}:
+            raise PipelineError("本次处理尚未通过检验，请先重新检验并续跑，或在学习台人工核对编辑后保存定稿。")
         target = path / "final" / "notes.md"
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
@@ -542,6 +555,8 @@ class WebApp:
 
     def save_note(self, lecture: str, content: str, finalize: bool) -> str:
         base = self._lecture_path(lecture)
+        if finalize and not content.strip():
+            raise PipelineError("空白笔记不能保存为定稿，请先补全内容。")
         if finalize:
             path = base / "final" / "notes.md"
         else:

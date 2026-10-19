@@ -243,6 +243,8 @@ class OpenAIProvider:
         try:
             with self._open(request, timeout=timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
+        except (ValueError, UnicodeError):
+            raise PipelineError("AI 服务未返回有效 JSON，请检查服务地址与模型接口兼容性。") from None
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             raise PipelineError(f"OpenAI API 返回 {exc.code}：{detail[:1500]}") from exc
@@ -286,6 +288,8 @@ class OpenAIProvider:
             },
         }
         response = self._request_json("/responses", payload)
+        if not isinstance(response, dict):
+            raise PipelineError("模型响应顶层格式错误，请检查接口兼容性。")
         if response.get("status") not in {None, "completed"}:
             raise PipelineError(f"模型响应未完成：{response.get('status')} / {response.get('incomplete_details')}")
         parts: list[str] = []
@@ -299,7 +303,13 @@ class OpenAIProvider:
             parts.append(response["output_text"])
         if not parts:
             raise PipelineError("模型响应中没有文本内容。")
-        return json.loads("".join(parts))
+        from .validation import validate_schema
+        try:
+            result = json.loads("".join(parts))
+        except (ValueError, TypeError):
+            raise PipelineError("模型输出不是有效 JSON，请检查模型是否支持结构化输出后重试。") from None
+        validate_schema(result, schema)
+        return result
 
     def transcribe(self, path: Path, *, model: str, prompt: str = "") -> dict[str, Any]:
         boundary = "----CourseNotes" + uuid.uuid4().hex
@@ -327,6 +337,8 @@ class OpenAIProvider:
         try:
             with self._open(request, timeout=900) as response:
                 return json.loads(response.read().decode("utf-8"))
+        except (ValueError, UnicodeError):
+            raise PipelineError("转录服务未返回有效 JSON，请检查转录模型与接口兼容性。") from None
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             raise PipelineError(f"转录 API 返回 {exc.code}：{detail[:1500]}") from exc
@@ -433,6 +445,20 @@ class CoursePipeline:
         self.config = effective_config(self.course_dir, read_toml(config_path))
 
     def build(self, lecture_dir: Path, *, offline: bool = False, force: bool = False) -> Path:
+        self.stage = "材料检查"
+        self.warnings = []
+        report = lecture_dir / "generated" / "validation.json"
+        write_json(report, {"status": "running", "stage": self.stage, "warnings": [], "checked_at": time.time()})
+        try:
+            output = self._build(lecture_dir, offline=offline, force=force)
+            write_json(report, {"status": "warning" if self.warnings else "passed", "stage": "完成", "warnings": self.warnings, "checked_at": time.time()})
+            return output
+        except Exception as exc:
+            write_json(report, {"status": "failed", "stage": self.stage, "error": str(exc), "warnings": self.warnings, "checked_at": time.time()})
+            raise
+
+    def _build(self, lecture_dir: Path, *, offline: bool = False, force: bool = False) -> Path:
+        from .validation import cached_result, validate_schema, validate_transcription, validate_transcript
         lecture_dir = lecture_dir.resolve()
         source_dir = lecture_dir / "source"
         if not source_dir.exists():
@@ -452,6 +478,8 @@ class CoursePipeline:
         if references_path.exists():
             try:
                 references = json.loads(references_path.read_text(encoding="utf-8"))
+                if not isinstance(references, list) or any(not isinstance(value, str) or not Path(value).is_file() for value in references):
+                    raise PipelineError("部分引用材料已移动或丢失，请恢复原文件位置或重新导入。")
                 files.extend(
                     path for value in references
                     if (path := Path(value)).is_file() and path.suffix.lower() in MEDIA_EXTENSIONS | DOCUMENT_EXTENSIONS
@@ -463,24 +491,31 @@ class CoursePipeline:
             raise PipelineError(f"没有在 {source_dir} 找到可处理的课程材料。")
         manifest = {}
         for path in files:
+            if path.stat().st_size == 0:
+                raise PipelineError(f"材料文件为空：{path.name}，请重新下载或导入。")
             try:
                 key = str(path.relative_to(source_dir))
             except ValueError:
                 key = str(path)
             manifest[key] = file_hash(path)
         state_path = lecture_dir / ".course-notes-state.json"
-        previous = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+        previous = cached_result(state_path, lambda value: validate_schema(value, {"type": "object"})) or {}
         config_digest = hashlib.sha256(json.dumps({k: v for k, v in self.config.items() if not k.startswith("_")}, sort_keys=True).encode()).hexdigest()
         prompt_path = self.course_dir / "prompt.md"
         config_digest += file_hash(prompt_path) if prompt_path.exists() else ""
-        signature = hashlib.sha256(json.dumps([manifest, config_digest], sort_keys=True).encode()).hexdigest()
+        signature = hashlib.sha256(json.dumps([manifest, config_digest, "validation-v1"], sort_keys=True).encode()).hexdigest()
         draft_path = generated_dir / "draft.md"
         if (
             not force
             and previous.get("signature") == signature
             and previous.get("offline") is offline
             and draft_path.exists()
+            and previous.get("artifacts")
+            and all((generated_dir / name).is_file() and file_hash(generated_dir / name) == digest for name, digest in previous["artifacts"].items())
+            and (extracted_dir / "evidence.json").is_file()
+            and previous.get("evidence_sha256") == file_hash(extracted_dir / "evidence.json")
         ):
+            self.warnings = previous.get("warnings", [])
             return draft_path
 
         provider = None if offline else OpenAIProvider(api_key=self.config.get("_api_key"), base_url=self.config.get("models", {}).get("base_url") or None)
@@ -488,24 +523,33 @@ class CoursePipeline:
         image_dir = extracted_dir / "slide_images"
         for path in files:
             if path.suffix.lower() in DOCUMENT_EXTENSIONS:
-                evidence.extend(extract_document(path, image_dir))
+                self.stage = "课件提取：" + path.name
+                extracted = extract_document(path, image_dir)
+                if not any(item.text.strip() for item in extracted):
+                    raise PipelineError(f"{path.name} 未提取到文本，可能为扫描件或空文件；请先 OCR 或补充文字材料。")
+                evidence.extend(extracted)
             elif path.suffix.lower() in MEDIA_EXTENSIONS:
                 model = self.config.get("models", {}).get("transcriber", "gpt-transcribe")
                 terms = ", ".join(self.config.get("course", {}).get("terms", []))
                 media_key = hashlib.sha256((file_hash(path) + model + terms + str(self.config.get("models", {}).get("base_url", ""))).encode()).hexdigest()[:20]
                 transcript_file = extracted_dir / f"{path.stem}.{media_key}.transcript.json"
-                if transcript_file.exists() and not force:
-                    transcript = json.loads(transcript_file.read_text(encoding="utf-8"))
+                self.stage = "音频转录：" + path.name
+                source_duration = media_duration(path) if provider is not None else 0
+                transcript = cached_result(transcript_file, lambda value: validate_transcript(value, source_duration)) if not force and provider is not None else None
+                if transcript is not None:
+                    pass
                 elif provider is not None:
                     chunks = split_audio(path, extracted_dir / f"{path.stem}_{media_key}_audio")
+                    if not chunks:
+                        raise PipelineError("音频切片为空，请检查 FFmpeg 与原文件。")
                     transcript_chunks = []
                     offset = 0.0
                     for chunk in chunks:
                         partial = chunk.with_suffix(".transcript.json")
-                        if partial.exists() and not force:
-                            result = json.loads(partial.read_text(encoding="utf-8"))
-                        else:
+                        result = cached_result(partial, validate_transcription) if not force else None
+                        if result is None:
                             result = provider.transcribe(chunk, model=model, prompt=terms)
+                            validate_transcription(result)
                             write_json(partial, result)
                         duration = media_duration(chunk)
                         transcript_chunks.append({
@@ -516,6 +560,7 @@ class CoursePipeline:
                         })
                         offset += duration
                     transcript = {"source": path.name, "chunks": transcript_chunks}
+                    validate_transcript(transcript, source_duration)
                     write_json(transcript_file, transcript)
                 else:
                     evidence.append(Evidence(path.name, "待转录", "离线模式未转录此媒体文件。", "media"))
@@ -525,10 +570,13 @@ class CoursePipeline:
                     evidence.append(Evidence(path.name, locator, part.get("text", ""), "transcript"))
 
         evidence = [item for item in evidence if item.text.strip()]
+        if not evidence:
+            raise PipelineError("没有可用于生成笔记的有效证据，任务未标记成功。")
         write_json(extracted_dir / "evidence.json", [item.as_dict() for item in evidence])
         atomic_write(extracted_dir / "evidence.md", evidence_as_text(evidence) + "\n")
 
         if offline:
+            self.warnings.append("离线证据包未运行 AI 语义质检，音视频也未转录。")
             lines = [f"# {lecture_dir.name}：证据包", "", "当前为离线构建，以下内容尚未由模型整理。", ""]
             lines.extend([f"## {item.source}｜{item.locator}\n\n{item.text}\n" for item in evidence])
             atomic_write(draft_path, "\n".join(lines))
@@ -543,12 +591,12 @@ class CoursePipeline:
             section_dir = generated_dir / "sections"
             section_dir.mkdir(parents=True, exist_ok=True)
             sections: list[dict[str, Any]] = []
+            self.stage = "笔记分段生成"
             for index, chunk in enumerate(make_chunks(evidence), 1):
                 section_key = hashlib.sha256((evidence_as_text(chunk) + custom + profile_rule + model + BASE_INSTRUCTIONS + str(self.config.get("models", {}).get("base_url", ""))).encode()).hexdigest()[:20]
                 cache = section_dir / f"{index:03d}_{section_key}.json"
-                if cache.exists() and not force:
-                    section = json.loads(cache.read_text(encoding="utf-8"))
-                else:
+                section = cached_result(cache, lambda value: validate_schema(value, NOTE_SCHEMA)) if not force else None
+                if section is None:
                     user_input = (
                         f"课程：{self.config.get('course', {}).get('title', self.course_dir.name)}\n"
                         f"当前材料批次：{index}\n\n{evidence_as_text(chunk)}"
@@ -563,8 +611,13 @@ class CoursePipeline:
                         schema_name="course_note_section",
                         schema=NOTE_SCHEMA,
                     )
+                    validate_schema(section, NOTE_SCHEMA)
                     write_json(cache, section)
                 sections.append(section)
+                if len(section["markdown"].strip()) < 80 and sum(len(item.text) for item in chunk) > 1000:
+                    self.warnings.append(f"第{index}批笔记明显偏短，请核对是否遗漏。")
+                if not section["source_locators"] or "〔来源：" not in section["markdown"]:
+                    self.warnings.append(f"第{index}批笔记缺少来源标注，请人工核对。")
             title = self.config.get("course", {}).get("title", self.course_dir.name)
             body = [f"# {title}｜{lecture_dir.name}", ""]
             for section in sections:
@@ -577,6 +630,7 @@ class CoursePipeline:
             complete_evidence = evidence_as_text(evidence)
             qa_input = f"【原始证据】\n{complete_evidence[:50000]}\n\n【生成笔记】\n{draft_path.read_text(encoding='utf-8')[:50000]}"
             reviewer = self.config.get("models", {}).get("reviewer", model)
+            self.stage = "语义质检"
             qa = provider.structured_response(
                 model=reviewer,
                 instructions="你是课程笔记审计员。只做证据覆盖、无依据陈述、术语一致性和人工复核点检查；不要重写笔记。",
@@ -584,10 +638,16 @@ class CoursePipeline:
                 schema_name="course_note_audit",
                 schema=QA_SCHEMA,
             )
+            validate_schema(qa, QA_SCHEMA)
+            if len(complete_evidence) > 50000 or len(draft_path.read_text(encoding="utf-8")) > 50000:
+                self.warnings.append("语义质检仅覆盖前50000字符，不代表全文已审计。")
+            if any(qa[key] for key in ["unsupported_claims", "missing_topics", "inconsistencies", "manual_checks"]):
+                self.warnings.append("语义质检发现需人工核对的内容，请查看质检报告。")
             write_json(generated_dir / "qa_report.json", qa)
             atomic_write(generated_dir / "qa_report.md", render_qa(qa))
 
-        write_json(state_path, {"signature": signature, "manifest": manifest, "completed_at": time.time(), "offline": offline})
+        artifacts = {name: file_hash(generated_dir / name) for name in ["draft.md", "qa_report.md"] + ([] if offline else ["qa_report.json"])}
+        write_json(state_path, {"signature": signature, "manifest": manifest, "completed_at": time.time(), "offline": offline, "artifacts": artifacts, "warnings": self.warnings, "evidence_sha256": file_hash(extracted_dir / "evidence.json")})
         return draft_path
 
 

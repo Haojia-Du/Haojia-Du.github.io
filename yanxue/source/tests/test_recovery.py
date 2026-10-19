@@ -50,8 +50,8 @@ class RecoveryTests(unittest.TestCase):
             chunk.write_bytes(b"fixture")
         provider = MagicMock()
         provider.transcribe.side_effect = [{"text": "first"}, PipelineError("network"), {"text": "second"}]
-        provider.structured_response.side_effect = lambda **kwargs: {"markdown": "## 笔记\n课程正文"} if kwargs["schema_name"] == "course_note_section" else {"summary": "通过"}
-        with patch("course_notes.core.OpenAIProvider", return_value=provider), patch("course_notes.core.split_audio", return_value=chunks), patch("course_notes.core.media_duration", return_value=12):
+        provider.structured_response.side_effect = lambda **kwargs: {"title": "笔记", "markdown": "## 笔记\n课程正文", "key_terms": [], "uncertainties": [], "source_locators": []} if kwargs["schema_name"] == "course_note_section" else {"summary": "通过", "unsupported_claims": [], "missing_topics": [], "inconsistencies": [], "manual_checks": []}
+        with patch("course_notes.core.OpenAIProvider", return_value=provider), patch("course_notes.core.split_audio", return_value=chunks), patch("course_notes.core.media_duration", side_effect=lambda path: 24 if path.suffix == ".mp4" else 12):
             with self.assertRaises(PipelineError):
                 CoursePipeline(self.course).build(lecture)
             CoursePipeline(self.course).build(lecture)

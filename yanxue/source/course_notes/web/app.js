@@ -54,12 +54,18 @@ function renderLectures(lectures) {
     const actions = [
       item.has_draft ? actionButton("在此阅读", "open-draft", item.name) : actionButton("正式生成", "build", item.name),
       item.status === "offline" ? actionButton("正式生成", "build", item.name, "secondary") : "",
+      ["failed", "running"].includes(item.validation?.status) ? actionButton("重新检验并续跑", "build", item.name, "secondary") : "",
       item.has_final ? actionButton("阅读定稿", "open-final", item.name) : "",
       item.has_qa ? actionButton("查看质检", "open-qa", item.name, "secondary") : "",
       item.has_draft ? actionButton("定稿", "finalize", item.name, "secondary") : actionButton("离线提取", "offline", item.name, "secondary"),
       actionButton("文件夹", "open-folder", item.name, "secondary")
     ].join("");
-    return `<tr><td>${escapeHtml(item.name)}</td><td>${item.sources} 个</td><td><span class="status-pill ${item.status}">${statusName(item.status)}</span></td><td>${timeText(item.updated_at)}</td><td><div class="table-actions">${actions}</div></td></tr>`;
+    const check = item.validation || {};
+    const labels = {failed:"检验失败", warning:"待人工核对", running:"尚未完成检验", passed:"结构检验通过"};
+    const checkText = check.error || (check.warnings || []).join("；");
+    const checkHtml = check.status ? `<details><summary>${escapeHtml(labels[check.status] || "未检验")}</summary><p>${escapeHtml(check.stage || "")}：${escapeHtml(checkText || "未检出结构异常，不代表语义完全正确。")}</p></details>` : "";
+    const stateText = check.status === "failed" ? "处理未通过" : statusName(item.status);
+    return `<tr><td>${escapeHtml(item.name)}</td><td>${item.sources} 个</td><td><span class="status-pill ${item.status}">${stateText}</span>${checkHtml}</td><td>${timeText(item.updated_at)}</td><td><div class="table-actions">${actions}</div></td></tr>`;
   }).join("");
 }
 
