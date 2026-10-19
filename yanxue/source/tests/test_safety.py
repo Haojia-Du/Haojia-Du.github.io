@@ -11,6 +11,15 @@ from course_notes.batch import edit_batch, prepare_batch, run_batch, batch_statu
 
 
 class RequestLimitTests(unittest.TestCase):
+    def test_stop_prevents_further_requests(self):
+        import threading
+        stop = threading.Event()
+        with tempfile.TemporaryDirectory() as folder, request_limit(Path(folder) / "usage.json", 10, stop):
+            before_request()
+            stop.set()
+            with self.assertRaisesRegex(PipelineError, "已停止"):
+                before_request()
+
     def test_limit_blocks_before_network_and_resets_context(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "usage.json"
@@ -35,6 +44,36 @@ class BatchControlTests(unittest.TestCase):
     setUp = helpers.OptionalFeatureTests.setUp
     tearDown = helpers.OptionalFeatureTests.tearDown
     fake_lesson = helpers.OptionalFeatureTests.fake_lesson
+
+    def test_watch_limit_is_shared_across_poll_cycles(self):
+        def sync(*args, **kwargs):
+            before_request()
+            return []
+        with patch("course_notes.webui.sync_once", side_effect=sync) as sync_call, patch.object(self.app.watcher._stop, "wait", return_value=False):
+            self.app.watcher.start(False, 2)
+            self.app.watcher._thread.join(timeout=3)
+            self.assertFalse(self.app.watcher.running)
+            self.assertEqual(sync_call.call_count, 3)
+            self.assertIn("次数上限", self.app.watcher.error)
+            usage = json.loads((self.root / "request-usage.json").read_text())
+            self.assertEqual(usage["used"], 2)
+
+    def test_watch_failure_stops_without_automatic_retry(self):
+        with patch("course_notes.webui.sync_once", side_effect=PipelineError("network failed")) as sync_call:
+            self.app.watcher.start(False, 10)
+            self.app.watcher._thread.join(timeout=3)
+            self.assertFalse(self.app.watcher.running)
+            self.assertEqual(sync_call.call_count, 1)
+            self.assertEqual(self.app.watcher.error, "network failed")
+
+    def test_media_picker_is_single_select_and_unicode_safe(self):
+        response = MagicMock(returncode=0, stdout='"C:\\\\课程\\\\录播.mp4"', stderr="")
+        with patch("course_notes.webui.subprocess.run", return_value=response) as run:
+            self.assertEqual(self.app.pick_files(True), ["C:\\课程\\录播.mp4"])
+            script = run.call_args.args[0][-1]
+            self.assertIn("Multiselect = $false", script)
+            self.assertIn("OutputEncoding", script)
+            self.assertNotIn("*.pdf", script)
 
     def test_sample_clips_media_and_reuses_on_retry(self):
         import shutil

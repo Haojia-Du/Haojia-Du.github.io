@@ -15,13 +15,27 @@ function updateFirstRun(data) {
   const usage = data.request_usage || {};
   $("#request-usage").textContent = usage.limit ? `最近一次任务已发起 ${usage.used} / ${usage.limit} 次 AI 请求（含失败和重试，不代表实际扣费）。` : "尚无任务用量记录。";
   $("#run-sample").disabled = data.job.running || data.watcher.running;
+  $("#pick-sample").disabled = data.job.running || data.watcher.running;
+  if (data.watcher.error) $("#setup-progress").textContent += ` · 自动监听已停止：${data.watcher.error}`;
 }
+
+$("#pick-sample").addEventListener("click", async () => {
+  try {
+    const result = await api("/api/pick-files", {method:"POST", body:{media_only:true}});
+    if (result.paths?.length) {
+      $("#sample-source").value = result.paths[0];
+      $("#sample-consent").checked = false;
+      notify("文件已选好，请确认后开始试跑；此操作未发送文件。");
+    }
+  } catch (error) { notify(error.message, true); }
+});
 
 $("#run-sample").addEventListener("click", async () => {
   if (!$("#sample-consent").checked) return notify("请先确认样本发送与费用提示。", true);
   try { await post("/api/sample", {source:$("#sample-source").value.trim(), confirmed:true, request_limit:taskRequestLimit()}, "已开始前3分钟试跑，完成后请在书架核对"); }
   catch (error) { notify(error.message, true); }
 });
+$("#sample-source").addEventListener("input", () => { $("#sample-consent").checked = false; });
 for (const id of ["estimate-minutes", "estimate-rate", "estimate-extra"]) {
   $("#" + id).addEventListener("input", () => {
     const values = ["estimate-minutes", "estimate-rate", "estimate-extra"].map(key => $("#" + key).value);

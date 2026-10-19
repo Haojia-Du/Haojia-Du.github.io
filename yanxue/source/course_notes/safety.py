@@ -11,15 +11,19 @@ def before_request():
     guard = _guard.get()
     if guard is None:
         return
+    if guard.get("stop") is not None and guard["stop"].is_set():
+        raise PipelineError("已停止自动监听，不再发起新的 AI 请求。已完成内容保留。")
     if guard["used"] >= guard["limit"]:
         raise PipelineError("已达到本次任务 AI 请求次数上限，任务已停止。已完成内容保留；确认后可重试并重新分配额度。")
     guard["used"] += 1
-    write_json(guard["path"], {k: v for k, v in guard.items() if k != "path"})
+    write_json(guard["path"], {k: v for k, v in guard.items() if k not in {"path", "stop"}})
 
 
 @contextmanager
-def request_limit(path, limit):
-    guard = {"path": path, "limit": limit, "used": 0}
+def request_limit(path, limit, stop=None):
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 10000:
+        raise PipelineError("AI 请求次数上限应为1～10000的整数。")
+    guard = {"path": path, "limit": limit, "used": 0, "stop": stop}
     write_json(path, {"limit": limit, "used": 0})
     token = _guard.set(guard)
     try:

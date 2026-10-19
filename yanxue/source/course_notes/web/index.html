@@ -36,12 +36,12 @@
         <p>首次需联网安装必要组件。只有点击生成后才发送课程材料；请先确认课程材料允许使用所选 AI 服务。</p>
         <details id="sample-panel"><summary>前3分钟试跑与用量保护</summary>
           <p>先从现有下载器取得一段本地音视频。试跑只截取前3分钟，生成独立笔记，不修改原文件，也不自动启动整节处理。</p>
-          <label>本地音视频完整路径<input id="sample-source" placeholder="粘贴已下载视频的完整路径"></label>
+          <label>本地音视频完整路径<input id="sample-source" placeholder="选择已下载的视频，也可粘贴完整路径"></label><button id="pick-sample" class="ghost">选择试跑文件</button>
           <label class="check-row"><input id="sample-consent" type="checkbox">我同意把样本音频及转录文本发送给已配置的 AI 服务，可能产生费用。</label>
           <button id="run-sample" class="primary">试跑前3分钟</button>
           <hr>
           <label>每次任务 AI 请求次数上限（重试也计数）<input id="request-limit" type="number" min="1" max="10000" value="100"></label>
-          <p>上限适用于从本页发起的一键处理、批次和试跑；其他手动生成默认100次。自动监听不受此上限保护。恢复任务会重新分配额度；已完成内容会复用。</p>
+          <p>上限适用于本页的手动 AI 生成与整个自动监听会话，失败重试也计数。监听失败后停止，不自行重新分配额度；手动恢复会重新分配额度，已完成内容会复用。</p>
           <div class="settings-grid"><label>预计音频总分钟<input id="estimate-minutes" type="number" min="0"></label><label>转录单价／分钟<input id="estimate-rate" type="number" min="0" step="any"></label><label>笔记、审计等预计费用<input id="estimate-extra" type="number" min="0" step="any"></label></div>
           <p id="cost-estimate">单价由你使用的服务决定；币种需统一。费用估算不是账单，也不是金额硬上限。</p>
           <p id="request-usage" aria-live="polite"></p>

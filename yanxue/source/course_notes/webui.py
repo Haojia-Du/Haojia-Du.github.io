@@ -138,35 +138,39 @@ class WatchController:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.offline = False
+        self.error = ""
 
     @property
     def running(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
 
-    def start(self, offline: bool = False) -> None:
+    def start(self, offline: bool = False, limit: int = 100) -> None:
         if self.running:
             return
         if self.app.runner.running:
             raise PipelineError("请等待当前任务完成后再开启自动监听。")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 10000:
+            raise PipelineError("AI 请求次数上限应为1～10000的整数。")
         self.offline = offline
+        self.error = ""
         self._stop.clear()
 
         def loop() -> None:
             mode = "离线" if offline else "正式"
             self.app.events.add(f"自动监听已开启（{mode}模式）。", "success")
-            while not self._stop.is_set():
-                try:
-                    imported = sync_once(
-                        self.app.course_dir,
-                        self.app.course_title,
-                        build=True,
-                        offline=offline,
-                    )
-                    if imported:
-                        self.app.events.add(f"自动处理了 {len(imported)} 个新增材料组。", "success")
-                except Exception as exc:
-                    self.app.events.add(f"自动监听本轮失败：{exc}", "error")
-                self._stop.wait(self.app.watch_interval)
+            with request_limit(self.app.workspace_root.parent / "request-usage.json", limit, self._stop):
+                while not self._stop.is_set():
+                    try:
+                        imported = sync_once(
+                            self.app.course_dir, self.app.course_title, build=True, offline=offline,
+                        )
+                        if imported:
+                            self.app.events.add(f"自动处理了 {len(imported)} 个新增材料组。", "success")
+                    except Exception as exc:
+                        self.error = str(exc)
+                        self.app.events.add(f"自动监听已停止：{exc}。修复后请手动重新开启。", "error")
+                        self._stop.set()
+                    self._stop.wait(self.app.watch_interval)
             self.app.events.add("自动监听已停止。")
 
         self._thread = threading.Thread(target=loop, name="course-notes-watch", daemon=True)
@@ -290,7 +294,7 @@ class WebApp:
             },
             "lectures": self.list_lectures(),
             "job": self.runner.status(),
-            "watcher": {"running": self.watcher.running, "offline": self.watcher.offline},
+            "watcher": {"running": self.watcher.running, "offline": self.watcher.offline, "error": self.watcher.error},
             "recorder": {
                 "running": recorder.get("running", False),
                 "logged_in": recorder.get("logged_in", False),
@@ -597,9 +601,10 @@ class WebApp:
         os.startfile(str(target))  # type: ignore[attr-defined]
         return str(target)
 
-    def pick_files(self) -> list[str]:
+    def pick_files(self, media_only: bool = False) -> list[str]:
         script = r'''
 Add-Type -AssemblyName System.Windows.Forms
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
 $dialog = New-Object System.Windows.Forms.OpenFileDialog
 $dialog.Multiselect = $true
 $dialog.Filter = "课程材料|*.mp4;*.m4a;*.mp3;*.wav;*.webm;*.pdf;*.pptx;*.docx;*.txt;*.md|所有文件|*.*"
@@ -608,13 +613,14 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
 }
 '''
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-STA", "-Command", script],
+            ["powershell", "-NoProfile", "-STA", "-Command", script.replace('$dialog.Multiselect = $true', '$dialog.Multiselect = $false').replace('课程材料|*.mp4;*.m4a;*.mp3;*.wav;*.webm;*.pdf;*.pptx;*.docx;*.txt;*.md', '音视频|*.mp4;*.m4a;*.mp3;*.wav;*.webm;*.mpeg;*.mpga') if media_only else script],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
             check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if result.returncode:
             raise PipelineError(result.stderr.strip() or "文件选择器打开失败。")
@@ -770,7 +776,7 @@ class Handler(SimpleHTTPRequestHandler):
             body = self._body()
             path = urlparse(self.path).path
             if path == "/api/sync":
-                self.app.schedule("sync", {"offline": bool(body.get("offline"))})
+                self.app.schedule("sync", {"offline": bool(body.get("offline")), "request_limit": body.get("request_limit", 100)})
             elif path == "/api/batch/start":
                 self.app.schedule("batch", body)
             elif path == "/api/batch/pause":
@@ -802,7 +808,7 @@ class Handler(SimpleHTTPRequestHandler):
                 lecture = str(body.get("lecture", ""))
                 offline = bool(body.get("offline"))
                 force = bool(body.get("force"))
-                self.app.schedule("build", {"lecture": lecture, "offline": offline, "force": force})
+                self.app.schedule("build", {"lecture": lecture, "offline": offline, "force": force, "request_limit": body.get("request_limit", 100)})
             elif path == "/api/retry":
                 self.app.schedule("", {}, retry=True)
             elif path == "/api/settings":
@@ -811,7 +817,7 @@ class Handler(SimpleHTTPRequestHandler):
                 save_settings(self.app.course_dir, body)
                 self.app.api_validation = "unknown"
             elif path == "/api/review/generate":
-                self.app.schedule("review", {"lecture": str(body.get("lecture", ""))})
+                self.app.schedule("review", {"lecture": str(body.get("lecture", "")), "request_limit": body.get("request_limit", 100)})
             elif path == "/api/review/progress":
                 lecture_path = self.app._lecture_path(str(body.get("lecture", "")))
                 review = json.loads((lecture_path / "generated" / "review.json").read_text(encoding="utf-8"))
@@ -832,7 +838,7 @@ class Handler(SimpleHTTPRequestHandler):
                 paths = [str(value) for value in body.get("paths", [])]
                 self.app.runner.start(f"导入 {title}", lambda: self.app.import_files(title, paths))
             elif path == "/api/pick-files":
-                self._json({"ok": True, "paths": self.app.pick_files()})
+                self._json({"ok": True, "paths": self.app.pick_files(bool(body.get("media_only")))})
                 return
             elif path == "/api/open":
                 target = self.app.open_item(str(body.get("lecture", "")), str(body.get("kind", "")))
@@ -867,7 +873,9 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json({"ok": True, "target": target})
                 return
             elif path == "/api/watch/start":
-                self.app.watcher.start(bool(body.get("offline")))
+                if not body.get("offline") and not body.get("confirmed"):
+                    raise PipelineError("自动处理会向 AI 服务发送新增材料并可能产生费用，请先确认。")
+                self.app.watcher.start(bool(body.get("offline")), body.get("request_limit", 100))
             elif path == "/api/watch/stop":
                 self.app.watcher.stop()
             else:

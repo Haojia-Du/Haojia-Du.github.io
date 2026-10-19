@@ -11,7 +11,7 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 
 
 def install_to(payload: Path, destination: Path) -> Path:
