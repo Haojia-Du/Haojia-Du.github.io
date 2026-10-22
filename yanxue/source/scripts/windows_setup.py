@@ -11,7 +11,7 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 
 
 def install_to(payload: Path, destination: Path) -> Path:
@@ -38,6 +38,18 @@ def shortcut(executable: Path, path: Path) -> None:
                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), capture_output=True)
 
 
+def desktop_directory() -> Path:
+    # Respect redirected desktops, e.g. OneDrive; do not assume ~/Desktop.
+    script = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; [Environment]::GetFolderPath('DesktopDirectory')"
+    result = subprocess.run(["powershell", "-NoProfile", "-Command", script], check=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    value = Path(result.stdout.strip())
+    if not value.is_absolute():
+        raise ValueError("无法找到桌面目录，可从开始菜单启动燕学。")
+    return value
+
+
 def main() -> None:
     root = tk.Tk()
     root.title("安装燕学工作台 " + VERSION)
@@ -53,7 +65,7 @@ def main() -> None:
     row.pack(fill="x", pady=7)
     ttk.Entry(row, textvariable=location).pack(side="left", fill="x", expand=True)
     ttk.Button(row, text="选择", command=lambda: location.set(filedialog.askdirectory() or location.get())).pack(side="right", padx=(8,0))
-    desktop = tk.BooleanVar(value=False)
+    desktop = tk.BooleanVar(value=True)
     launch = tk.BooleanVar(value=True)
     ttk.Checkbutton(frame, text="创建桌面快捷方式（可选）", variable=desktop).pack(anchor="w", pady=4)
     ttk.Checkbutton(frame, text="安装完成后打开工作台", variable=launch).pack(anchor="w", pady=4)
@@ -70,12 +82,12 @@ def main() -> None:
                 start_menu = Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "燕学工作台.lnk"
                 shortcut(exe, start_menu)
                 if make_desktop:
-                    shortcut(exe, Path.home() / "Desktop" / "燕学工作台.lnk")
+                    shortcut(exe, desktop_directory() / "燕学工作台.lnk")
                 def finish():
                     state.set("安装完成")
                     if should_launch:
                         subprocess.Popen([str(exe)], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-                    messagebox.showinfo("安装完成", "可从开始菜单打开燕学工作台。连接设置中可按需安装浏览器组件和检查更新。")
+                    messagebox.showinfo("安装完成", "以后双击桌面上的燕学即可启动并打开页面。若未选择桌面图标，也可从开始菜单打开。")
                     root.destroy()
                 root.after(0, finish)
             except Exception as exc:

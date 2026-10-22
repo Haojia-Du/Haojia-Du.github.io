@@ -6,8 +6,9 @@
   <title>燕学 · 北京大学学习工作台</title>
   <link rel="stylesheet" href="/styles.css">
   <link rel="stylesheet" href="/vendor/Temml-Local.css">
+  <link rel="stylesheet" href="/simple.css">
 </head>
-<body>
+<body class="simple-mode">
   <div class="shell">
     <aside class="sidebar">
       <div class="brand"><div class="brand-mark">燕学</div><div><strong>燕学工作台</strong><span>PKU STUDY DESK</span></div></div>
@@ -24,10 +25,25 @@
 
     <main>
       <header>
-        <div><div class="eyebrow">PEKING UNIVERSITY · LOCAL FIRST</div><h1>燕学工作台</h1><p id="subtitle">从教学网录播到可复习笔记，全程停留在这一个页面。</p></div>
-        <div class="header-actions"><button class="ghost" id="refresh">刷新状态</button><button class="primary" id="toggle-watch"><span class="pulse"></span><span>开启自动处理</span></button></div>
+        <div><div class="eyebrow">燕学 · 本机学习工具</div><h1>把课堂材料，整理成好读的笔记。</h1><p id="subtitle">选材料，开始整理，然后安心阅读。</p></div>
+        <div class="header-actions"><button class="ghost" id="open-settings">设置</button><button class="ghost" id="refresh">刷新状态</button><button class="primary" id="toggle-watch"><span class="pulse"></span><span>开启自动处理</span></button></div>
       </header>
-      <div id="task-error" class="section error-banner hidden"><div><b>处理未完成</b><p id="task-error-message"></p></div><button id="retry-task" class="primary">从断点重试</button></div>
+      <div id="task-error" class="section error-banner hidden"><div><b>这次没有完成</b><p id="task-error-message"></p></div><button id="retry-task" class="primary">继续处理</button></div>
+
+      <section id="simple-start" class="section simple-card">
+        <div class="simple-steps" aria-label="学习流程"><span>1 选材料</span><span>2 开始整理</span><span>3 看笔记</span></div>
+        <div class="source-tabs" role="group" aria-label="材料来源"><button id="choose-local" aria-pressed="true">本地材料</button><button id="choose-campus" aria-pressed="false">教学网课程</button></div>
+        <div id="simple-local-form">
+          <button class="file-drop" id="simple-pick"><span class="file-plus" aria-hidden="true">＋</span><strong>选择录播或课件</strong><span>支持视频、音频、PDF、PPTX、Word 和文字稿，可多选</span></button>
+          <p id="simple-selected" aria-live="polite">尚未选择材料</p>
+          <label class="simple-title-label">笔记名称<input id="simple-title" placeholder="选好材料后自动填写，也可以改名" maxlength="180"></label>
+          <div class="simple-actions"><button id="simple-start-task" class="primary" disabled>开始整理</button><button id="simple-evidence" class="text-button" disabled>先整理原文，不调用 AI</button></div>
+          <p class="simple-privacy">材料保存在本机。生成笔记时会发送所需内容给你设置的 AI 服务，可能产生费用。</p>
+        </div>
+        <p id="simple-setup-hint" class="simple-setup hidden">首次使用，只需连接一次 AI。<button id="simple-connect" class="text-button">去连接</button></p>
+        <div id="simple-progress" class="simple-progress hidden" role="status" aria-live="polite"></div>
+        <p id="simple-connection-error" class="hidden" role="alert"></p>
+      </section>
 
       <section id="getting-started" class="section panel">
         <h2>第一次使用，从这里开始</h2>
@@ -87,7 +103,8 @@
       </section>
 
       <section id="lectures" class="section">
-        <div class="section-head"><div><span class="eyebrow">NOTEBOOK</span><h2>笔记书架</h2></div><select id="workspace-select" aria-label="选择本机课程工作区"></select></div>
+        <div class="section-head"><div><h2>我的笔记</h2><p>整理完成后，直接在这里阅读和核对。</p></div><select id="workspace-select" aria-label="选择本机课程工作区"></select></div>
+        <div id="simple-books" class="simple-books" aria-live="polite"></div>
         <div id="batch-progress" class="panel batch-progress hidden"><div class="section-head"><div><b id="batch-progress-title">批量进度</b><p id="batch-progress-summary"></p></div><div><button id="pause-batch" class="ghost">完成当前节后暂停</button><button id="resume-batch" class="primary">继续批次</button></div></div><div id="batch-progress-items"></div></div>
         <details class="panel course-template"><summary>这门课的模板与术语（可选）</summary><form id="course-options-form" class="settings-grid"><label>笔记模板<select id="course-template-profile"><option value="general">通用课程</option><option value="economics">经济学</option><option value="stem">理工科</option><option value="humanities">人文社科</option><option value="law">法学</option><option value="language">语言课程</option></select></label><label class="wide">术语表（每行一项）<textarea id="course-terms" rows="3" placeholder="英文专名、教师常用词和缩写"></textarea></label><label class="wide">本课程补充要求<textarea id="course-prompt" rows="4" placeholder="例如：保留史料争议；解释不同学派的分歧"></textarea></label><div class="wide row-actions"><button class="primary" type="submit">保存这门课的设置</button></div></form></details>
         <div class="table-wrap"><table><thead><tr><th>课程单元</th><th>材料</th><th>状态</th><th>最近更新</th><th class="actions-col">操作</th></tr></thead><tbody id="lecture-body"><tr><td colspan="5" class="empty">正在读取课程材料…</td></tr></tbody></table></div>
@@ -117,6 +134,7 @@
       <section id="activity" class="section"><div class="section-head"><div><span class="eyebrow">ACTIVITY</span><h2>运行记录</h2></div><div id="job-chip" class="job-chip idle"><span></span>空闲</div></div><div class="terminal" id="terminal"><div class="log muted">等待操作…</div></div></section>
     </main>
   </div>
+  <dialog id="settings-drawer" aria-labelledby="settings-title"><div class="settings-drawer-head"><div><h2 id="settings-title">设置与更多功能</h2><p>首次连接后，日常只需回到首页选材料。</p></div><button id="close-settings" class="ghost" aria-label="关闭设置">返回学习</button></div><div id="settings-content"></div></dialog>
   <div id="note-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="note-title"><div class="modal-card workbench">
     <div class="modal-head"><div><span id="note-kind" class="eyebrow">STUDY DESK</span><h2 id="note-title">课程学习台</h2></div><button id="close-note" class="icon-button" aria-label="关闭">×</button></div>
     <div class="workbench-body">
@@ -132,5 +150,6 @@
   <script src="/study-desk.js"></script>
   <script src="/optional-features.js"></script>
   <script src="/first-run.js"></script>
+  <script src="/simple.js"></script>
 </body>
 </html>

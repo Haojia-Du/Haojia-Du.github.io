@@ -23,6 +23,8 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 from .core import (
     CoursePipeline,
+    DOCUMENT_EXTENSIONS,
+    MEDIA_EXTENSIONS,
     OpenAIProvider,
     PipelineError,
     atomic_write,
@@ -372,6 +374,26 @@ class WebApp:
         lecture = import_lecture(self.course_dir, title.strip(), [Path(value) for value in paths], link=True)
         return str(lecture)
 
+    def validate_simple(self, args: dict) -> None:
+        paths = args.get("paths")
+        if not isinstance(paths, list) or not 1 <= len(paths) <= 200 or any(not isinstance(value, str) for value in paths):
+            raise PipelineError("请先选择1～200个课程材料文件。")
+        if not isinstance(args.get("offline", False), bool):
+            raise PipelineError("请选择有效的整理方式。")
+        for value in paths:
+            source = Path(value)
+            if not source.is_file() or source.suffix.lower() not in DOCUMENT_EXTENSIONS | MEDIA_EXTENSIONS:
+                raise PipelineError("部分材料已移动或格式不支持，请重新选择文件。")
+        if not args.get("offline") and not self.config.get("_api_key"):
+            raise PipelineError("请先在设置中连接 AI；也可以选择不调用 AI，先整理原文。")
+        args["title"] = str(args.get("title", "")).strip()[:180] or Path(paths[0]).stem
+
+    def simple_process(self, args: dict) -> str:
+        self.validate_simple(args)
+        lecture = import_lecture(self.course_dir, args["title"], [Path(value) for value in args["paths"]], link=True)
+        CoursePipeline(self.course_dir).build(lecture, offline=bool(args.get("offline")))
+        return "整理完成，可在首页阅读：" + lecture.name
+
     def check_key(self) -> str:
         try:
             OpenAIProvider(api_key=self.config.get("_api_key"), base_url=self.config.get("models", {}).get("base_url")).validate_key()
@@ -421,6 +443,9 @@ class WebApp:
             function = lambda: self.one_click_process(str(args["course_id"]), int(args["recording_index"]), bool(args.get("include_files", True)), str(args.get("profile", "general")), args["snapshot"])
         elif kind == "build":
             function = lambda: self.build(str(args["lecture"]), bool(args.get("offline")), bool(args.get("force")))
+        elif kind == "simple":
+            self.validate_simple(args)
+            function = lambda: self.simple_process(args)
         elif kind == "sync":
             function = lambda: self.sync(bool(args.get("offline")))
         elif kind == "review":
@@ -437,6 +462,7 @@ class WebApp:
             raise PipelineError("没有可重试任务，请从课程单元重新启动。")
         labels = {"one-click": "一键完成录播学习资料", "build": "生成课程笔记", "sync": "同步并整理材料", "review": "生成复习包", "batch": "批量整理整门课", "browser-install": "安装浏览器组件", "ffmpeg-install": "安装 FFmpeg 组件"}
         labels["sample"] = "前3分钟小样本试跑"
+        labels["simple"] = "正在整理材料"
         limit = int(args.get("request_limit", 100))
         if not 1 <= limit <= 10000:
             raise PipelineError("AI 请求次数上限应在 1～10000 之间。")
@@ -677,6 +703,23 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
         parsed = json.loads(value)
         return [parsed] if isinstance(parsed, str) else parsed
 
+    def pick_folder(self) -> str:
+        script = r'''
+Add-Type -AssemblyName System.Windows.Forms
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.Description = "选择 PKU-Recorder 所在文件夹"
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+  $dialog.SelectedPath | ConvertTo-Json -Compress
+}
+'''
+        result = subprocess.run(["powershell", "-NoProfile", "-STA", "-Command", script],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if result.returncode:
+            raise PipelineError("文件夹选择器没有打开，请稍后重试。")
+        return json.loads(result.stdout.strip()) if result.stdout.strip() else ""
+
     def shutdown(self) -> None:
         self.watcher.stop()
         if self.recorder_process and self.recorder_process.poll() is None:
@@ -846,7 +889,11 @@ class Handler(SimpleHTTPRequestHandler):
                 raise PipelineError("请在本机工作台页面执行此操作。")
             body = self._body()
             path = urlparse(self.path).path
-            if path == "/api/sync":
+            if path == "/api/simple/start":
+                if not body.get("offline") and body.get("confirmed") is not True:
+                    raise PipelineError("生成笔记会发送所需材料给已连接的 AI 服务，并可能收费，请先确认。")
+                self.app.schedule("simple", body)
+            elif path == "/api/sync":
                 self.app.schedule("sync", {"offline": bool(body.get("offline")), "request_limit": body.get("request_limit", 100)})
             elif path == "/api/batch/start":
                 self.app.schedule("batch", body)
@@ -910,6 +957,9 @@ class Handler(SimpleHTTPRequestHandler):
                 self.app.runner.start(f"导入 {title}", lambda: self.app.import_files(title, paths))
             elif path == "/api/pick-files":
                 self._json({"ok": True, "paths": self.app.pick_files(bool(body.get("media_only")))})
+                return
+            elif path == "/api/pick-folder":
+                self._json({"ok": True, "path": self.app.pick_folder()})
                 return
             elif path == "/api/open":
                 target = self.app.open_item(str(body.get("lecture", "")), str(body.get("kind", "")))

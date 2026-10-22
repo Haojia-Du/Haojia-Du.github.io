@@ -30,7 +30,10 @@ def main():
                 raise RuntimeError("Frozen application did not start within 20 seconds")
             assert state["native"] and state["pdf"] and state["pptx"], state
             with urllib.request.urlopen(f"http://127.0.0.1:{args.port}/") as response:
-                assert "optional-features.js" in response.read().decode()
+                html = response.read().decode()
+                assert "simple.js" in html and 'id="simple-start"' in html and 'id="settings-drawer"' in html
+            with urllib.request.urlopen(f"http://127.0.0.1:{args.port}/simple.js") as response:
+                assert "startSimpleTask" in response.read().decode()
             with urllib.request.urlopen(f"http://127.0.0.1:{args.port}/api/course/options") as response:
                 assert json.load(response)["profile"] == "general"
             print("PASS: frozen Windows app serves UI, diagnostics, PDF/PPTX dependencies and course settings", flush=True)

@@ -157,11 +157,15 @@ function render(data) {
   if (typeof updateStudyStatus === "function") updateStudyStatus(job);
   if (typeof updateOptionalFeatures === "function") updateOptionalFeatures(data);
     if (typeof updateFirstRun === "function") updateFirstRun(data);
+  if (typeof updateSimpleView === "function") updateSimpleView(data);
 }
 
 async function refresh() {
   try { render(await api("/api/status")); }
-  catch (error) { notify(error.message, true); }
+  catch (error) {
+    if (typeof showSimpleConnectionError === "function") showSimpleConnectionError();
+    else notify(error.message, true);
+  }
 }
 
 async function pollEvents() {
@@ -183,11 +187,12 @@ async function pollEvents() {
 
 async function post(path, body = {}, message = "任务已提交") {
   try {
-      const guarded = ["/api/one-click", "/api/batch/start", "/api/batch/resume", "/api/sample", "/api/build", "/api/sync", "/api/review/generate", "/api/watch/start"].includes(path);
+      const guarded = ["/api/simple/start", "/api/one-click", "/api/batch/start", "/api/batch/resume", "/api/sample", "/api/build", "/api/sync", "/api/review/generate", "/api/watch/start"].includes(path);
       if (guarded && typeof taskRequestLimit === "function") body.request_limit = taskRequestLimit();
       if (guarded && path !== "/api/sample" && !body.offline) {
         const scope = path === "/api/watch/start" ? "整个自动监听会话累计" : "本次任务";
-        if (!confirm(`将向配置的 AI 服务发送课程音频或提取内容，可能产生费用。${scope}请求上限 ${body.request_limit || 100} 次，不是金额上限。确认开始？`)) return null;
+        const notice = ["/api/simple/start", "/api/one-click"].includes(path) ? "将使用已连接的 AI 整理这些材料，可能产生费用。是否开始？" : `将向配置的 AI 服务发送课程音频或提取内容，可能产生费用。${scope}请求上限 ${body.request_limit || 100} 次，不是金额上限。确认开始？`;
+        if (!confirm(notice)) return null;
         body.confirmed = true;
       }
       if (path === "/api/retry" && !confirm("重试会按原任务的请求上限重新分配额度，已完成内容会复用，可能继续产生费用。确认继续？")) return null;
@@ -237,7 +242,13 @@ document.addEventListener("click", event => {
   if (action === "open-folder") post("/api/open", { lecture, kind: "folder" }, "正在打开文件夹");
 });
 
-$("#start-recorder").addEventListener("click", () => post("/api/recorder/start", {}, "正在启动本机教学网连接"));
+$("#start-recorder").addEventListener("click", () => {
+  if (!snapshot?.environment.downloader_exists && typeof openSimpleSettings === "function") {
+    openSimpleSettings("setting-downloader");
+    return notify("首次连接教学网，请先在设置中选择下载器所在文件夹。");
+  }
+  post("/api/recorder/start", {}, "正在启动本机教学网连接");
+});
 $("#login-form").addEventListener("submit", async event => {
   event.preventDefault();
   const username = $("#pku-username").value.trim();
